@@ -1,0 +1,104 @@
+# Implementation report - Agent Town (pass 4: checkpoint compatibility)
+
+Date: 2026-09-13. Environment: Windows 11 Pro 10.0.26200, Node v22.17.1, npm 10.9.2. Repository: pixel-agents at `3537e140c2094761beae748592aeb92ece8edfdd` (untouched) plus the new `town/` application, `AGENT_TOWN.md` and `Start-AgentTown.cmd`.
+
+This report covers the first vertical slice, the pass-2 supervisor corrections, the pass-3 late-event corrections and the pass-4 checkpoint compatibility fix. It is **not** the whole six-week plan: no Agent Teams/teammates, no transcript reading, no usage display, no multi-room walking, no WSL/remote hosts.
+
+## Real CLI integration evidence (supervisor-run, not by this pass)
+
+The supervisor ran a real, read-only Claude Code (Fable) parallel-agent hook session against the built server; the artefacts are in `supervision/live-check-20260913-215748/` (`observed-events.json`, `observed-state.json`, `server.log`, the project-scoped `settings.json` used). Reported result: 16 hook events ingested, one main agent plus 2 real child agents, 4 completed tool calls, state reconstructed as expected. This pass did not re-run it. **Real Codex CLI hook ingestion has not been tested**; the Codex mapping remains based on the official docs and `hook_runtime.rs` only.
+
+## Pass 4: old checkpoint compatibility (schema 2 → 3)
+
+Problem (reproduced independently by the reviewer): pass 3 added the required `SessionState.recentTurnIds` and `staleTurnEvents`, but `schemaVersion` stayed 2 and `loadCheckpoint` parsed pass-2 checkpoints without defaults, so applying a new turn to such a state threw `TypeError: undefined.includes`.
+
+Fix (narrow, non-destructive, idempotent):
+
+- `src/shared/state.ts`: `STATE_SCHEMA_VERSION = 3`; new exported `upgradeState(state)` adds only missing fields (`staleTurnEvents = 0`; `recentTurnIds = [currentTurn.turnId]` if a current turn id is stored, else `[]`; top-level counters/boundaries defaulted only when absent) and preserves agents, calls, approval decisions, current turn, event/sequence counts and `historyFromSeq`/`prunedSessions`. No past turn identity is invented. `ensureSession` guards each session with the same per-session upgrade so the reducer never depends on the caller. `cloneState` upgrades its copy.
+- `src/server/store.ts`: `loadCheckpoint` upgrades in memory; the stored row is left as is until the next retention pass writes a current checkpoint (no data deleted).
+- `src/client/store.ts`: snapshot and replay base are upgraded on receipt.
+- Stale-turn protection is unchanged and active on upgraded state.
+
+Tests (`test/compat.test.ts`, 3 cases): (a) `upgradeState` on a representative pass-2 state adds exactly the missing fields, preserves every record and counter, and is idempotent; (b) the reducer applied directly to an old-shape session handles a new turn, a stale Stop and a genuine Stop; (c) SQLite: rows inserted then retained away, a schema-2 checkpoint persisted verbatim, a post-checkpoint event stored, `reconstructState` keeps agents/calls/denied approval/current turn/counts and `historyFromSeq`, a new turn plus stale and genuine Stop complete normally, restart reconstruction equals live, and the replay base carries the upgraded fields.
+
+Changed files in pass 4: `src/shared/state.ts`, `src/server/store.ts`, `src/client/store.ts`, `test/compat.test.ts` (new), `docs/architecture.md`, `docs/implementation-report.md`.
+
+## Pass 3: late-event state bugs (supervisor-late-events.mts)
+
+`node node_modules/tsx/dist/cli.mjs ../supervision/supervisor-late-events.mts` (from `town/`) went from 0 / 2 passed to **2 / 2 passed** with the script unchanged; `supervisor-regressions.mts` still passes 6 / 6. Lasting tests: `town/test/late-events.test.ts` (12 cases).
+
+| # | Bug | Fix | Tests |
+|---|---|---|---|
+| 1 | Late `Stop(turn-one)` after `UserPromptSubmit(turn-two)` completed turn-two | Turn-scoped terminal events (`agent.response_completed`, `turn.failed`, `turn.completed`) are related to the current turn by source turn id (`turn_id` / Claude `prompt_id`). A known older turn (tracked in a bounded `recentTurnIds`) → `staleTurnEvents++`, ignored: no tool closing, no approval resolution, no waiting-state or lifecycle change. A never-seen turn id → `unknownEvents++`, ignored. No ids on either side → applies to the current turn (no chronology guessed). Re-delivered `UserPromptSubmit` of a finished turn never reopens it; a duplicate start of the running turn is counted | stale Stop (Codex turn ids and Claude prompt ids: tools stay running, approval pending, waiting state kept, lifecycle active, root status working); stale Interrupt; ordinary current-turn Stop/Interrupt; no-id case; unseen turn id; late outcome for the older turn's tool still refines that tool only while the new turn keeps running |
+| 2 | Late observed `PostToolUse(tool-a)` after an inferred-unknown approval left the decision unknown | `resolveApproval` refines an inference (`inferred`/`unknown`) when later observed evidence for the same agent-scoped call arrives; observed decisions are never rewritten; an outcome with no source signal (`ended`) yields decision `unknown` with observed evidence | late success → allowed/observed; late PermissionDenied → denied; observed denial not overwritten by a later "success"; agent-scoped (another agent's same call id does not refine); Codex no-signal outcome keeps unknown |
+
+## Pass 2 summary (supervisor review)
+
+### Supervisor regressions (confirmed and fixed in pass 2)
+
+`node node_modules/tsx/dist/cli.mjs ../supervision/supervisor-regressions.mts` (run from `town/`) went from 1 passed / 5 failed on the pass-1 tree to **6 passed / 0 failed** without touching the script. Each case now also lives in `town/test/regressions.test.ts`.
+
+| # | Regression | Fix | Test |
+|---|---|---|---|
+| 1 | Root Stop left the turn running | `agent.response_completed` for the root agent completes the turn exactly once; a child's Stop never touches it | regressions, reducer |
+| 2 | Delayed PostToolUse could not refine `unresolved` | `unresolved` is provisional (`lateOutcome` flag); completed/failed/denied/ended stay sticky | regressions |
+| 3 | Stale duplicate PreToolUse reactivated a finished agent | duplicate check runs before any lifecycle change | regressions |
+| 4 | Agent-local tool ids collided session-wide | tool calls and approvals keyed by (agent, `tool_use_id`), `sourceId` preserved; all consumers updated | regressions, reducer (approvals per agent, colliding Claude/Codex session ids) |
+| 5 | `Authorization: Bearer <cred>` leaked | new pattern set (full auth headers, bare Bearer/Basic, JSON quoted keys, `--token VALUE`, basic-auth URLs); masking before truncation; paths and string inputs masked; sender JS and server TS tested on the same samples | redact |
+| 6 | `agent_id = "__proto__"` mutated `Object.prototype` | null-prototype dictionaries plus own-key helpers (`shared/dict.ts`) for sessions, agents, tool calls, approvals; control characters stripped from ids; `__proto__`/`constructor`/`prototype` covered for agents, tools, approvals and sessions | regressions |
+
+### Additional review items (pass 2)
+
+| # | Item | What changed | Test |
+|---|---|---|---|
+| 7 | HTTP/WS crash inputs | per-request and per-socket try/catch; `decodeURIComponent` failures → 4xx; URL length cap; query ints parsed with `safeInt` (non-integer/Infinity/huge → fallback, clamped); WS frames that are not `{type}` objects ignored; bearer compared on UTF-8 byte length (no `timingSafeEqual` throw); `clientError` handler | server (robustness) |
+| 8 | Static containment | `resolveStaticPath`: decode once, reject NUL and dot-segments, resolve, require the root + separator prefix; SPA fallback only for extension-less paths | server (static): traversal, encoded traversal, backslash, sibling prefix `client-secret.txt`, `.data/`, NUL |
+| 9 | Retention vs live state | `checkpoint` table + `retention.ts`: prune seq from age/count/size, checkpoint advanced by replaying discarded rows, complete-session pruning applied to checkpoint **and** live state with one rule, transactional delete, `historyFromSeq`/`prunedSessions` in state, diagnostics and scrubber; `/api/replay` returns a correct base state | store: restart == live after count and age retention, idempotent second pass, replay base |
+| 10 | Installer ownership | exact invocation shape + script path equality (case-insensitive on Windows); lookalikes (echo, same basename elsewhere, wrapper, appended shell, http hook) survive install and uninstall; mixed groups preserved; nested `hooks[]` validated | installer |
+| 11 | Response signals / apply_patch | `isError`/`is_error`/`success`/`ok`/`exit_code`/`error` recognised; outcome `unknown` preserved (Codex: "종료 · 결과 미확인"); apply_patch headers read from `tool_input.command` (Codex docs), patch body never stored | providers, redact (sender) |
+| 12 | Fabricated state / ancestry | bare SessionStart → `idle` (no bubble); "working" only with a running tool or an observed running turn; sessions silent >10 min labelled "최근 활동 없음"; Codex child immediate parent = unknown, UI shows "세션 소속" vs "직접 상위"; link line only for known parents; instructional paragraphs removed (short status text + setup diagnostics only); "생각 중" replaced by "응답 진행 중" | viewModel, reducer, providers, smoke |
+| 13 | Room assignment | sticky allocator: sessions keep rooms, active sessions win, unseated active evicts only ended sessions, creation order for free rooms; collision-safe character keys (JSON tuple); 12 employees get distinct seats; over-capacity sessions flagged "자리 없음" | viewModel (exactly 6 active + old ended, 9 active, stickiness across events/eviction) |
+| 14 | Screen-space text under zoom | separate UI camera at zoom 1 (world camera ignores the UI layer and vice-versa); bubble rect updated every frame even when hidden; responsive two-row toolbar with icon-only buttons on narrow screens; fixed `HH:mm:ss` timeline column | smoke: anchoring ≤0.5 px at fit and after zoom on desktop and mobile; toolbar visibility during DEMO; PNG-decoded non-blank canvas |
+| 15 | Spool concurrency/order | one file per envelope (atomic rename), claimed batches, byte-bounded (`Buffer.byteLength`), backlog flushed in order before the live event, live event queued behind any pending or in-flight backlog, loopback-only `server.json`, log lines never contain payloads | hook-sender: offline PreToolUse → reconnect Stop keeps order and leaves the tool unresolved (not running); 12 concurrent writers + 4 concurrent flushers, no loss, no duplicates; non-loopback server.json refused; Korean byte bounds |
+
+## Commands run and results (final state)
+
+```
+cd town
+node node_modules/tsx/dist/cli.mjs ../supervision/supervisor-late-events.mts  # both cases passed: true
+node node_modules/tsx/dist/cli.mjs ../supervision/supervisor-regressions.mts   # {"passed":6,"failed":0,"total":6}
+npm run typecheck                                                              # tsc client + server: no errors
+npx vitest run                                                                 # Test Files 11 passed, Tests 119 passed
+npm run build                                                                  # copy-assets 82 files; dist/client js ~1,502 kB (gzip ~413 kB)
+node scripts/browser-smoke.mjs                                                 # (pass 3 build) 36/36 checks passed (msedge channel); pass 4 changed no UI code
+node scripts/verify-dev.mjs                                                    # (pass 2) bootstrap via proxy 200, websocket snapshot, Vite index served: dev mode OK
+```
+
+Smoke screenshots kept for review: `smoke-results/desktop-empty.png`, `desktop-live.png`, `desktop-zoom.png`, `desktop-selected.png`, `desktop-demo.png` (1440×960), `mobile-office.png`, `mobile-zoom.png`, `mobile-timeline.png` (390×844 @2x). `results.json` lists every check with its measured values (anchoring error, colour counts, toolbar boxes).
+
+No dev server or built server is left running (connecting to 127.0.0.1:4317 afterwards gives ECONNREFUSED). Every test and script used a temporary data dir; nothing was installed into any real project or user settings.
+
+## Verification honesty
+
+- The engineering passes used **fixture-shaped hook payloads** derived from the official documentation and `hook_runtime.rs`. A real Claude Code session was connected once by the supervisor (see "Real CLI integration evidence"); **no real Codex session has been connected.** Codex field names, especially `agent_id` on tool hooks inside subagents and the exact shape of `tool_response`, must be confirmed on the first Codex run (`AGENT_TOWN_HOOK_LOG=<file>` logs event names and statuses only).
+- Codex immediate-parent identity is deliberately left unknown; the office shows session membership only. Claude's child → root link relies on the documented rule that subagents cannot spawn subagents.
+- The Playwright smoke ran with the Edge channel available on this PC; a machine without Edge/Chrome needs `npx playwright install chromium`.
+- Performance targets from the plan (hook latency p95, 20 characters at 50 events/s) were not measured.
+
+## Permission denials during this pass
+
+None in passes 2, 3 or 4. (Pass 1: reading `~/.codex`/`~/.claude`, the CLI version commands, the npm debug log via grep, several multi-operation Bash pipelines and a final `git status` were auto-denied; none blocked the work.)
+
+## Known limitations
+
+- See `docs/architecture.md` "Known limits" and `docs/hooks.md`. In short: fixture-only verification, hosted Codex tools invisible, Codex outcome depends on `tool_response` signals, Claude `permission_prompt` notifications carry no tool id, one character per agent within its room, six rooms (extra sessions listed with a "자리 없음" badge), replay window ≤5000 events on a checkpoint base.
+- `npm install` on npm 10.9 needs `--legacy-peer-deps` (resolver crash on a peer range); the launcher passes it.
+- Source files contain no literal control bytes (a scan is part of the pass-2 checks); the NUL key separator and control-character regex are built from `String.fromCharCode`.
+
+## Suggested next work
+
+1. Connect one real Claude Code and one real Codex session in a scratch project, capture the redacted payloads, and adjust the normalizers/fixtures to the observed fields (especially Codex subagent tool hooks and `tool_response`).
+2. Measure hook latency and UI update latency; add the synthetic load test (20 characters, 50 events/s).
+3. Optional transcript/log adapter for sessions that started before hooks were installed (marked "history only").
+4. Agent Teams (Claude teammates) and Codex spawner identity if a future hook exposes it.
+5. Keyboard navigation for the office, carpet marching squares, and a denser layout for many employees.

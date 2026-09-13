@@ -1,0 +1,6 @@
+*.jsonl
+*-status.json
+*.log
+visual-check/
+http-check/
+live-check-*/

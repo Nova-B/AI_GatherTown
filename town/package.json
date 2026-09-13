@@ -1,0 +1,46 @@
+{
+  "name": "agent-town",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Agent Town: local pixel-office visualizer for Claude Code and Codex CLI sessions",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "assets": "node scripts/copy-assets.mjs",
+    "predev": "node scripts/copy-assets.mjs",
+    "dev": "node scripts/dev.mjs",
+    "dev:server": "tsx watch src/server/index.ts",
+    "dev:client": "vite",
+    "prebuild": "node scripts/copy-assets.mjs",
+    "build": "tsc -p tsconfig.server.json && vite build",
+    "start": "node --no-warnings=ExperimentalWarning dist/server/index.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.server.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "smoke": "node scripts/browser-smoke.mjs",
+    "verify:dev": "node scripts/verify-dev.mjs",
+    "hooks": "node hook/install.mjs"
+  },
+  "dependencies": {
+    "lucide-react": "^1.45.0",
+    "phaser": "^3.90.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.2",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^6.1.1",
+    "playwright": "^1.63.0",
+    "tsx": "^4.21.0",
+    "typescript": "~5.9.3",
+    "vite": "^8.3.0",
+    "vitest": "^4.1.10"
+  }
+}
