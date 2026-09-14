@@ -67,8 +67,14 @@ export interface AgentEventPayload {
   reason?: string;
   /** Subagent type/name as reported by the provider. */
   agentType?: string;
-  /** Provider model id when supplied. */
+  /** Provider model id when supplied (SessionStart, model switch, Codex turn). */
   model?: string;
+  /** Agent/Task tool input: subagent type the caller requested. */
+  subagentType?: string;
+  /** Agent/Task tool input: model the caller requested for the subagent (alias or id). */
+  subagentModel?: string;
+  /** Agent/Task tool input: masked, bounded task description given to the subagent. */
+  taskDescription?: string;
   /** Provider permission mode when supplied. */
   permissionMode?: string;
   /** Notification type (Claude Notification hook). */

@@ -23,7 +23,7 @@ function session(st: TownState, id: string, opts: { ended?: boolean; at?: number
 beforeEach(() => resetCounter());
 
 describe('room assignment', () => {
-  it('exactly maxPods active sessions plus old ended sessions: every active session keeps a room', () => {
+  it('exactly maxPods active sessions plus old ended sessions: every active session keeps a room, ended ones leave the office', () => {
     const st = createInitialState();
     const now = Date.now();
     for (let i = 0; i < 4; i++) session(st, `ended-${i}`, { ended: true, at: now - 100_000 + i });
@@ -32,7 +32,9 @@ describe('room assignment', () => {
     const roomKeys = vm.rooms.map((r) => r.sessionKey);
     expect(roomKeys.every((k) => k?.startsWith('claude:active-'))).toBe(true);
     expect(new Set(roomKeys).size).toBe(6);
-    expect(vm.unseatedSessionKeys).toHaveLength(4);
+    // Ended sessions are not in the office at all (neither seated nor waiting for a room).
+    expect(vm.unseatedSessionKeys).toHaveLength(0);
+    expect(vm.characters.some((c) => c.sessionKey.startsWith('claude:ended-'))).toBe(false);
   });
 
   it('more than maxPods active sessions: seated ones keep their rooms, the rest are reported unseated', () => {

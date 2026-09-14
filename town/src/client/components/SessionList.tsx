@@ -93,6 +93,9 @@ export function SessionList(): React.JSX.Element {
                 <span className={`state state-${stateClass}`}>
                   {approvals > 0 ? `승인 대기 ${approvals}` : failed ? '실패 있음' : lifecycleLabel(sess, stale)}
                 </span>
+                <span className="muted mono" title="모델 (SessionStart/모델 전환 훅 기준)">
+                  {sess.model ?? '모델 미제공'}
+                </span>
                 <span className="muted">에이전트 {agents.length}</span>
                 <span className="muted">도구 {running}</span>
                 <span className="muted">{relTime(sess.lastEventAt, now)}</span>

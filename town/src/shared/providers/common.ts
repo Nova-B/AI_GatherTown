@@ -235,6 +235,20 @@ export function toolPayload(raw: RawPayload, homeDir: string | null): AgentEvent
   const payload: AgentEventPayload = { activity };
   if (toolName) payload.toolName = mask(toolName, homeDir);
   if (target) payload.toolTarget = target;
+  if (activity === 'agent') {
+    // Delegation calls (Agent/Task/spawn_agent): keep what the caller asked
+    // for, so a child agent that starts afterwards can be shown with its task
+    // and requested model. The prompt itself is never carried.
+    const input = obj(raw.tool_input);
+    if (input) {
+      const subagentType = idStr(input.subagent_type);
+      if (subagentType) payload.subagentType = mask(subagentType, homeDir).slice(0, 64);
+      const model = idStr(input.model);
+      if (model) payload.subagentModel = model.slice(0, 64);
+      const description = sanitizeText(input.description, MAX_TARGET, homeDir);
+      if (description) payload.taskDescription = description;
+    }
+  }
   return payload;
 }
 

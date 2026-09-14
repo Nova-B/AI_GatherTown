@@ -41,6 +41,7 @@ export const CLAUDE_EVENTS = [
   'Stop',
   'SubagentStart',
   'SubagentStop',
+  'PostModelSwitch',
 ];
 
 export const CODEX_EVENTS = [

@@ -26,6 +26,7 @@
  * - Dictionaries keyed by provider-chosen ids use the safe helpers in dict.ts.
  */
 
+import { ACTIVITY_LABEL_KO } from './activity.js';
 import { createDict, deleteOwn, getOwn, hasOwn, ownKeys, ownValues, setOwn, type Dict } from './dict.js';
 import type { ActivityClass, AgentEvent, Evidence, Provider, ToolOutcome } from './events.js';
 import { MAIN_AGENT_ID, sessionKey } from './events.js';
@@ -59,6 +60,12 @@ export interface ToolCallState {
   /** True when an explicit outcome arrived after the call had been marked unresolved. */
   lateOutcome: boolean;
   duplicateEvents: number;
+  /** Delegation calls only (activity 'agent'): what the caller requested. */
+  subagentType: string | null;
+  subagentModel: string | null;
+  taskDescription: string | null;
+  /** Child agent this delegation call was linked to (inferred, see linkSpawnCall). */
+  spawnedAgentId: string | null;
 }
 
 export type ApprovalStatus = 'pending' | 'resolved';
@@ -102,6 +109,18 @@ export interface AgentState {
   characterIndex: number;
   responsesCompleted: number;
   waitingForInput: boolean;
+  /**
+   * Model requested for this agent by the delegation call (Agent tool `model`).
+   * null = not stated by any payload; the session model then applies (see
+   * effectiveModel). Never guessed.
+   */
+  model: string | null;
+  /** Task description from the linked delegation call (null = none linked). */
+  task: string | null;
+  /** Always 'inferred': no provider payload links a child to its Agent call by id. */
+  taskEvidence: 'inferred' | null;
+  /** Internal key of the linked delegation call. */
+  taskToolId: string | null;
 }
 
 export type SessionLifecycle = 'active' | 'ended' | 'unknown';
@@ -140,8 +159,11 @@ export interface SessionState {
   duplicatesIgnored: number;
 }
 
-/** 2 = pass-2 checkpoints (no turn tracking fields); 3 = current. */
-export const STATE_SCHEMA_VERSION = 3;
+/**
+ * 2 = pass-2 checkpoints (no turn tracking fields); 3 = turn tracking;
+ * 4 = per-agent model/task and delegation-call fields (pass 5).
+ */
+export const STATE_SCHEMA_VERSION = 4;
 
 export interface TownState {
   schemaVersion: number;
@@ -177,6 +199,10 @@ export function createInitialState(): TownState {
  * v2 → v3: `recentTurnIds` and `staleTurnEvents` were added per session. No
  * past turn identity is invented: the only id seeded is the stored current
  * turn's own id (when present), which the v3 reducer would have recorded.
+ * v3 → v4: agents gained `model`/`task`/`taskEvidence`/`taskToolId`, tool
+ * calls gained `subagentType`/`subagentModel`/`taskDescription`/
+ * `spawnedAgentId`. All default to null: no task or model is invented for
+ * agents whose delegation call was not observed.
  */
 export function upgradeState(state: TownState): TownState {
   const raw = state as Partial<TownState> & { schemaVersion?: number };
@@ -199,6 +225,24 @@ function upgradeSession(s: SessionState): SessionState {
     raw.recentTurnIds = raw.currentTurn?.turnId ? [raw.currentTurn.turnId] : [];
   }
   if (typeof raw.staleTurnEvents !== 'number') raw.staleTurnEvents = 0;
+  if (raw.agents) {
+    for (const a of ownValues(raw.agents)) {
+      const ra = a as Partial<AgentState>;
+      if (ra.model === undefined) ra.model = null;
+      if (ra.task === undefined) ra.task = null;
+      if (ra.taskEvidence === undefined) ra.taskEvidence = null;
+      if (ra.taskToolId === undefined) ra.taskToolId = null;
+    }
+  }
+  if (raw.toolCalls) {
+    for (const tc of ownValues(raw.toolCalls)) {
+      const rt = tc as Partial<ToolCallState>;
+      if (rt.subagentType === undefined) rt.subagentType = null;
+      if (rt.subagentModel === undefined) rt.subagentModel = null;
+      if (rt.taskDescription === undefined) rt.taskDescription = null;
+      if (rt.spawnedAgentId === undefined) rt.spawnedAgentId = null;
+    }
+  }
   return s;
 }
 
@@ -241,6 +285,10 @@ function newAgent(
     characterIndex,
     responsesCompleted: 0,
     waitingForInput: false,
+    model: null,
+    task: null,
+    taskEvidence: null,
+    taskToolId: null,
   };
 }
 
@@ -282,7 +330,10 @@ function ensureSession(state: TownState, ev: AgentEvent): SessionState {
     s.cwd = ev.cwd;
     s.projectName = projectNameFromCwd(ev.cwd);
   }
-  if (!s.model && ev.payload.model) s.model = ev.payload.model;
+  // Latest stated model wins: SessionStart, a model switch, or (Codex) the
+  // turn's model. Only session-level payloads carry `model`; a delegation
+  // call's requested model travels as `subagentModel` and never lands here.
+  if (ev.payload.model) s.model = ev.payload.model;
   // A session loaded from an older checkpoint may lack v3 fields; defaults are
   // added here so the reducer never depends on the caller having upgraded.
   return upgradeSession(s);
@@ -425,7 +476,46 @@ function newCall(
     endedByTurn: false,
     lateOutcome: false,
     duplicateEvents: 0,
+    subagentType: ev.payload.subagentType ?? null,
+    subagentModel: ev.payload.subagentModel ?? null,
+    taskDescription: ev.payload.taskDescription ?? null,
+    spawnedAgentId: null,
   };
+}
+
+/**
+ * Link a newly started child agent to the delegation call (Agent/Task/
+ * spawn_agent) that most plausibly created it. No provider payload carries
+ * an id that ties a SubagentStart to its Agent tool_use_id, so this is an
+ * inference and is recorded as such (`taskEvidence: 'inferred'`):
+ * - candidates are running, still-unlinked delegation calls of another agent
+ *   (the known parent when there is one);
+ * - a candidate whose requested subagent type contradicts the child's
+ *   reported type is excluded; typed matches are preferred over untyped;
+ * - the oldest remaining candidate is chosen (delegations start in order).
+ * With no candidate the child simply has no task; nothing is invented.
+ */
+function linkSpawnCall(s: SessionState, a: AgentState): void {
+  if (a.role !== 'subagent' || a.taskToolId) return;
+  const candidates = ownValues(s.toolCalls).filter(
+    (tc) =>
+      tc.activity === 'agent' &&
+      tc.status === 'running' &&
+      !tc.spawnedAgentId &&
+      tc.agentId !== a.id &&
+      (!a.parentAgentId || tc.agentId === a.parentAgentId) &&
+      (!tc.subagentType || !a.agentType || tc.subagentType === a.agentType),
+  );
+  if (candidates.length === 0) return;
+  const typed = a.agentType ? candidates.filter((tc) => tc.subagentType === a.agentType) : [];
+  const pool = typed.length > 0 ? typed : candidates;
+  pool.sort((x, y) => x.startSeq - y.startSeq);
+  const tc = pool[0]!;
+  tc.spawnedAgentId = a.id;
+  a.taskToolId = tc.id;
+  a.task = tc.taskDescription ?? tc.target;
+  a.taskEvidence = 'inferred';
+  if (!a.model && tc.subagentModel) a.model = tc.subagentModel;
 }
 
 function finishTool(s: SessionState, ev: AgentEvent, status: ToolStatus): ToolCallState {
@@ -588,6 +678,7 @@ export function applyEvent(state: TownState, ev: AgentEvent): TownState {
       a.lastResponse = null;
       if (ev.payload.agentType) a.agentType = ev.payload.agentType;
       if (s.lifecycle !== 'ended') s.lifecycle = 'active';
+      linkSpawnCall(s, a);
       break;
     }
     case 'agent.response_completed': {
@@ -788,6 +879,57 @@ export const AGENT_STATUS_LABEL_KO: Record<AgentDisplayStatus, string> = {
   ended: '세션 종료',
   unknown: '상태 미확인',
 };
+
+/**
+ * Model shown for an agent: the model its delegation call requested, else the
+ * session's model. `source` says which, so the UI can label inheritance.
+ */
+export function effectiveModel(
+  s: SessionState,
+  a: AgentState,
+): { model: string | null; source: 'agent' | 'session' | 'none' } {
+  if (a.model) return { model: a.model, source: 'agent' };
+  if (s.model) return { model: s.model, source: 'session' };
+  return { model: null, source: 'none' };
+}
+
+export interface AgentWorkSummary {
+  /** Tool calls observed for the agent (any status). */
+  total: number;
+  failed: number;
+  /** Per activity class, most frequent first. */
+  byActivity: Array<{ activity: ActivityClass; count: number }>;
+  /** Most recently started call, running or not. */
+  lastCall: ToolCallState | null;
+}
+
+/** What an agent actually did, from observed tool calls only (computed, never stored). */
+export function agentWorkSummary(s: SessionState, a: AgentState): AgentWorkSummary {
+  const counts = new Map<ActivityClass, number>();
+  let total = 0;
+  let failed = 0;
+  let lastCall: ToolCallState | null = null;
+  for (const tc of ownValues(s.toolCalls)) {
+    if (tc.agentId !== a.id) continue;
+    total++;
+    if (tc.status === 'failed' || tc.status === 'denied') failed++;
+    counts.set(tc.activity, (counts.get(tc.activity) ?? 0) + 1);
+    if (!lastCall || tc.startSeq > lastCall.startSeq) lastCall = tc;
+  }
+  const byActivity = [...counts.entries()]
+    .map(([activity, count]) => ({ activity, count }))
+    .sort((x, y) => y.count - x.count);
+  return { total, failed, byActivity, lastCall };
+}
+
+/** Korean one-liner for a work summary, e.g. "읽기 3 · 검색 2 · 수정 1"; null when no tool was observed. */
+export function workSummaryLabel(w: AgentWorkSummary, maxParts = 4): string | null {
+  if (w.total === 0) return null;
+  const parts = w.byActivity.slice(0, maxParts).map((p) => `${ACTIVITY_LABEL_KO[p.activity]} ${p.count}`);
+  if (w.byActivity.length > maxParts) parts.push('…');
+  const failed = w.failed > 0 ? ` · 실패 ${w.failed}` : '';
+  return `${parts.join(' · ')}${failed}`;
+}
 
 export const TOOL_STATUS_LABEL_KO: Record<ToolStatus, string> = {
   running: '진행 중',

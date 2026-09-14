@@ -6,8 +6,11 @@ import { getOwn, ownValues } from '../../shared/dict.js';
 import {
   AGENT_STATUS_LABEL_KO,
   agentDisplayStatus,
+  agentWorkSummary,
+  effectiveModel,
   type SessionState,
   TOOL_STATUS_LABEL_KO,
+  workSummaryLabel,
 } from '../../shared/state.js';
 import { elapsed, relTime } from '../format.js';
 import { store, useStore } from '../store.js';
@@ -62,7 +65,9 @@ function SessionDetails({ session, now }: { session: SessionState; now: number }
         <dt>세션 ID</dt>
         <dd className="mono">{session.sessionId}</dd>
         <dt>모델</dt>
-        <dd>{session.model ?? '미제공'}</dd>
+        <dd className="mono" title="SessionStart 또는 모델 전환 훅이 알려준 값. Claude Code는 SessionStart에 model을 항상 싣지는 않습니다.">
+          {session.model ?? '미제공'}
+        </dd>
         <dt>상태</dt>
         <dd>
           {session.lifecycle === 'ended' ? '종료' : session.lifecycle === 'active' ? '활성' : '미확인'}
@@ -86,6 +91,7 @@ function SessionDetails({ session, now }: { session: SessionState; now: number }
       <ul className="agent-list">
         {agents.map((a) => {
           const st = agentDisplayStatus(session, a);
+          const model = effectiveModel(session, a);
           return (
             <li key={a.id}>
               <button type="button" className="agent-row" onClick={() => store.select(session.key, a.id)} data-testid="agent-row">
@@ -93,6 +99,16 @@ function SessionDetails({ session, now }: { session: SessionState; now: number }
                 <span className="agent-name">{roleLabel(a)}</span>
                 <span className="muted">{AGENT_STATUS_LABEL_KO[st]}</span>
                 {a.activeToolIds.length > 0 && <span className="muted">도구 {a.activeToolIds.length}</span>}
+                {model.model && (
+                  <span className="muted mono small" title={model.source === 'session' ? '세션 모델 (위임 호출에 별도 지정 없음)' : '위임 호출이 지정한 모델'}>
+                    {model.model}
+                  </span>
+                )}
+                {a.task && (
+                  <span className="agent-task small" title={a.task}>
+                    {a.task}
+                  </span>
+                )}
               </button>
             </li>
           );
@@ -114,6 +130,9 @@ function AgentDetails({ session, agentId, now }: { session: SessionState; agentI
     .filter((ap) => ap.agentId === a.id)
     .sort((x, y) => y.requestSeq - x.requestSeq);
   const parent = a.parentAgentId ? getOwn(session.agents, a.parentAgentId) : undefined;
+  const model = effectiveModel(session, a);
+  const work = agentWorkSummary(session, a);
+  const workLabel = workSummaryLabel(work, 6);
   return (
     <div className="section" data-testid="agent-details">
       <div className="section-head">
@@ -144,6 +163,35 @@ function AgentDetails({ session, agentId, now }: { session: SessionState; agentI
             <dd>{a.agentType}</dd>
           </>
         )}
+        <dt>모델</dt>
+        <dd className="mono" data-testid="agent-model">
+          {model.model ?? '미제공'}
+          {model.source === 'session' && <span className="muted"> (세션 모델)</span>}
+          {model.source === 'agent' && <span className="muted"> (위임 호출 지정)</span>}
+        </dd>
+        {a.role === 'subagent' && (
+          <>
+            <dt>담당 작업</dt>
+            <dd data-testid="agent-task">
+              {a.task ?? <span className="muted">위임 호출과 연결되지 않음</span>}
+              {a.task && a.taskEvidence === 'inferred' && (
+                <span className="warn-tag" title="훅 페이로드에는 자식 에이전트와 Agent 호출을 잇는 id가 없어, 같은 유형의 진행 중 위임 호출 중 가장 오래된 것과 연결했습니다.">
+                  Agent 호출과 추정 연결
+                </span>
+              )}
+            </dd>
+          </>
+        )}
+        <dt>작업 요약</dt>
+        <dd data-testid="agent-work">
+          {workLabel ?? <span className="muted">관측된 도구 호출 없음</span>}
+          {work.lastCall && (
+            <span className="muted">
+              {' '}· 마지막: {work.lastCall.toolName}
+              {work.lastCall.target ? ` · ${work.lastCall.target}` : ''}
+            </span>
+          )}
+        </dd>
         <dt>직접 상위</dt>
         <dd data-testid="agent-parent">
           {a.role === 'main' ? '없음 (루트)' : parent ? roleLabel(parent) : '미확인'}

@@ -129,6 +129,8 @@ const ID_FIELDS = [
   'prompt_id',
   'permission_mode',
   'model',
+  'from_model',
+  'to_model',
   'reason',
   'source',
   'trigger',
@@ -148,6 +150,7 @@ const TOOL_INPUT_STRING_FIELDS = [
   'url',
   'description',
   'subagent_type',
+  'model',
   'prompt_title',
 ];
 

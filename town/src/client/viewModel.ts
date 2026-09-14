@@ -9,13 +9,40 @@ import {
   agentDisplayStatus,
   type AgentDisplayStatus,
   type AgentState,
+  agentWorkSummary,
   type SessionState,
   type TownState,
+  workSummaryLabel,
 } from '../shared/state.js';
 import type { Selection, TimelineFilters } from './store.js';
 
 /** Sessions with no event for this long are labelled "최근 활동 없음" (never ended/failed). */
 export const STALE_AFTER_MS = 10 * 60 * 1000;
+
+/**
+ * A finished employee (subagent whose response ended) stays in the office
+ * this long after its last activity, showing what it did, then leaves.
+ * Ended sessions and ended agents leave immediately. The panels still list
+ * every agent; only the office scene hides them.
+ */
+export const DONE_LINGER_MS = 8000;
+
+/** True when the agent should not be drawn in the office at `now`. */
+export function isAgentHidden(s: SessionState, a: AgentState, now: number): boolean {
+  if (s.lifecycle === 'ended' || a.lifecycle === 'ended') return true;
+  if (a.role !== 'subagent') return false;
+  if (a.lifecycle === 'active' || a.pendingApprovalIds.length > 0 || a.waitingForInput) return false;
+  const last = Date.parse(a.lastActivityAt);
+  return Number.isFinite(last) && now - last > DONE_LINGER_MS;
+}
+
+/** Bubble for an employee whose response ended: the task it was given and what it did. */
+export function doneBubble(s: SessionState, a: AgentState): { title: string; detail: string | null; extra: number } {
+  const work = workSummaryLabel(agentWorkSummary(s, a));
+  if (a.role !== 'subagent') return { title: '응답 완료', detail: null, extra: 0 };
+  const what = a.task ?? a.agentType;
+  return { title: what ? `완료 · ${what}` : '완료', detail: work, extra: 0 };
+}
 
 export interface CharacterVM {
   /** Collision-safe key (JSON of provider, session id, agent id). */
@@ -160,9 +187,11 @@ export function buildOfficeVM(
 ): OfficeVM {
   const rooms: RoomVM[] = [];
   const characters: CharacterVM[] = [];
+  // Ended sessions leave the office entirely (their room is freed); they stay
+  // in the session list and details.
   const visible = state.sessionOrder
     .map((k) => getOwn(state.sessions, k))
-    .filter((s): s is SessionState => !!s && filters.providers[s.provider]);
+    .filter((s): s is SessionState => !!s && filters.providers[s.provider] && s.lifecycle !== 'ended');
   const { roomed, unseated, map } = assignRooms(visible, maxPods, previousRooms);
   for (let i = 0; i < maxPods; i++) {
     const s = roomed[i];
@@ -172,7 +201,7 @@ export function buildOfficeVM(
       sessionKey: s?.key ?? null,
       title: s ? (s.projectName ?? s.sessionId.slice(0, 12)) : '빈 자리',
       subtitle: s
-        ? `${PROVIDER_LABEL[s.provider]} · ${s.sessionId.slice(0, 8)}${s.lifecycle === 'ended' ? ' · 종료' : stale ? ' · 최근 활동 없음' : ''}`
+        ? `${PROVIDER_LABEL[s.provider]} · ${s.model ?? s.sessionId.slice(0, 8)}${s.lifecycle === 'ended' ? ' · 종료' : stale ? ' · 최근 활동 없음' : ''}`
         : '세션 없음',
       provider: s?.provider ?? null,
     });
@@ -183,6 +212,7 @@ export function buildOfficeVM(
     const agents = ownValues(s.agents);
     let seat = 0;
     for (const a of agents) {
+      if (isAgentHidden(s, a, now)) continue;
       const status = agentDisplayStatus(s, a);
       const running = a.activeToolIds
         .map((id) => getOwn(s.toolCalls, id))
@@ -207,7 +237,7 @@ export function buildOfficeVM(
       } else if (status === 'waiting_input') {
         bubble = { title: '입력 대기', detail: null, extra: 0 };
       } else if (status === 'done') {
-        bubble = { title: '응답 완료', detail: null, extra: 0 };
+        bubble = doneBubble(s, a);
       } else if (status === 'working') {
         // Turn running, no tool call observed: only the lifecycle is known.
         bubble = { title: '응답 진행 중', detail: null, extra: 0 };

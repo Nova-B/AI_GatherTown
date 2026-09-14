@@ -46,6 +46,7 @@ export const CLAUDE_HOOK_EVENTS = [
   'Stop',
   'SubagentStart',
   'SubagentStop',
+  'PostModelSwitch',
 ] as const;
 
 export function normalizeClaude(raw: RawPayload, ctx: NormalizeContext): AgentEvent | null {
@@ -178,6 +179,16 @@ export function normalizeClaude(raw: RawPayload, ctx: NormalizeContext): AgentEv
         agentIdOrigin: 'source',
         parentAgentId: MAIN_AGENT_ID,
       });
+    }
+    case 'PostModelSwitch': {
+      // `model` is only ever supplied on SessionStart (and not always); a
+      // /model switch is the only later evidence of the session's model.
+      const payload: AgentEventPayload = { notificationType: 'PostModelSwitch' };
+      const to = idStr(raw.to_model);
+      const from = idStr(raw.from_model);
+      if (to) payload.model = to;
+      if (from || to) payload.note = `${from ?? '?'} → ${to ?? '?'}`;
+      return makeEvent('claude', ctx, base, 'notification', payload);
     }
     default: {
       return makeEvent('claude', ctx, base, 'unknown', { hookEventName: base.hookEventName });

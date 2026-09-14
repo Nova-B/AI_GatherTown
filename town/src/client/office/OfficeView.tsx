@@ -1,10 +1,13 @@
 import Phaser from 'phaser';
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { POD_COUNT } from './layout.js';
 import { OfficeScene } from './OfficeScene.js';
 import { store, useStore } from '../store.js';
 import { buildOfficeVM, type RoomMap } from '../viewModel.js';
+
+/** Time-dependent parts of the view model (finished employees leaving) are re-evaluated at this rate. */
+const TICK_MS = 1000;
 
 export function OfficeView(): React.JSX.Element {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -12,19 +15,32 @@ export function OfficeView(): React.JSX.Element {
   const gameRef = useRef<Phaser.Game | null>(null);
   const s = useStore();
   const view = store.viewState();
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const t = window.setInterval(() => setTick((x) => x + 1), TICK_MS);
+    return () => window.clearInterval(t);
+  }, []);
   // Sticky room allocation, kept separately per view mode so DEMO/replay
   // never disturb the live office's rooms.
   const roomMaps = useRef<Record<string, RoomMap>>({});
   const vm = useMemo(
     () => {
       const previous = roomMaps.current[s.mode] ?? {};
-      const built = buildOfficeVM(view, s.selection, s.filters, s.mode === 'demo', POD_COUNT, Date.now(), previous);
+      // In replay the clock is the scrubbed history's clock, not the wall clock,
+      // so employees that had just finished at the cursor are still shown.
+      let now = Date.now();
+      if (s.mode === 'replay') {
+        const events = store.viewEvents();
+        const lastAt = events.length > 0 ? Date.parse(events[events.length - 1]!.receivedAt) : NaN;
+        if (Number.isFinite(lastAt)) now = lastAt;
+      }
+      const built = buildOfficeVM(view, s.selection, s.filters, s.mode === 'demo', POD_COUNT, now, previous);
       roomMaps.current[s.mode] = built.roomMap;
       return built;
     },
     // The store mutates state in place; the version-triggered render is the signal.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [view, s.selection, s.filters, s.mode, s.live.eventsApplied, s.demo.eventsApplied, s.replayCursor, s.pausedView],
+    [view, s.selection, s.filters, s.mode, s.live.eventsApplied, s.demo.eventsApplied, s.replayCursor, s.pausedView, tick],
   );
 
   useEffect(() => {

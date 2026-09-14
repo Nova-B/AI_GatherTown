@@ -639,8 +639,9 @@ code {
 
 .agent-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 2px 6px;
   width: 100%;
   border: 0;
   background: transparent;
@@ -756,6 +757,15 @@ code {
   background: #fef3c7;
   padding: 0 4px;
   border-radius: 2px;
+}
+
+.agent-task {
+  flex-basis: 100%;
+  color: var(--slate);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
 }
 
 /* ---- timeline ---------------------------------------------------------- */

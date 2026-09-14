@@ -1,8 +1,38 @@
-# Implementation report - Agent Town (pass 4: checkpoint compatibility)
+# Implementation report - Agent Town (pass 5: office departures, models, subagent tasks)
 
-Date: 2026-09-13. Environment: Windows 11 Pro 10.0.26200, Node v22.17.1, npm 10.9.2. Repository: pixel-agents at `3537e140c2094761beae748592aeb92ece8edfdd` (untouched) plus the new `town/` application, `AGENT_TOWN.md` and `Start-AgentTown.cmd`.
+Date: 2026-09-13 (passes 1-4), 2026-09-14 (pass 5). Environment: Windows 11 Pro 10.0.26200, Node v22.17.x, npm 10.9.2. Repository: pixel-agents at `3537e140c2094761beae748592aeb92ece8edfdd` (untouched) plus the new `town/` application, `AGENT_TOWN.md` and `Start-AgentTown.cmd`.
 
-This report covers the first vertical slice, the pass-2 supervisor corrections, the pass-3 late-event corrections and the pass-4 checkpoint compatibility fix. It is **not** the whole six-week plan: no Agent Teams/teammates, no transcript reading, no usage display, no multi-room walking, no WSL/remote hosts.
+This report covers the first vertical slice, the pass-2 supervisor corrections, the pass-3 late-event corrections, the pass-4 checkpoint compatibility fix and the pass-5 user-requested UI changes. It is **not** the whole six-week plan: no Agent Teams/teammates, no transcript reading, no usage display, no multi-room walking, no WSL/remote hosts.
+
+## Pass 5: departures, per-agent model, subagent task (user feedback 2026-09-14)
+
+Requests: (1) ended sessions and finished employees kept standing in the office; (2) no way to see which model a session or agent runs on; (3) a finished employee only said "응답 완료" with no hint of what it had been responsible for.
+
+What changed (all label-honest: nothing is shown that no payload stated, inferences are tagged):
+
+| # | Change | Where | Rule |
+|---|---|---|---|
+| 1 | Ended sessions leave the office and free their room; ended agents are not drawn; a finished employee (subagent whose response ended, no pending approval, not waiting for input) lingers `DONE_LINGER_MS` = 8 s after its last activity and then leaves. State, session list, details and timeline keep every agent | `src/client/viewModel.ts` (`isAgentHidden`, `visible` filter), `OfficeView.tsx` (1 s tick; replay uses the last replayed event's time as the clock) | Visibility only - the reducer is untouched by this item |
+| 2 | Session model = latest stated `model` (SessionStart; new Claude `PostModelSwitch` hook → `to_model`; Codex turn). Agent model = the delegation call's requested `model` (`Agent` tool input, alias kept as given), else the session model labelled "(세션 모델)". Shown in the session list, room label, agent rows and agent details | `state.ts` (`effectiveModel`, `ensureSession`), `providers/claude.ts` + `common.ts`, hook sender allowlist (`from_model`, `to_model`, `tool_input.model`), installer (`PostModelSwitch` added to the Claude event list) | Claude supplies `model` only on SessionStart and not always (docs), so "모델 미제공" is a legitimate value |
+| 3 | On `agent.started` a child is linked to the oldest running, unlinked delegation call (activity `agent`) of its parent (any agent when the parent is unknown) whose `subagent_type` does not contradict the child's `agent_type`, typed matches first. Stored as `task`/`taskToolId`/`taskEvidence: 'inferred'`; the call records `spawnedAgentId`. The done bubble becomes "완료 · {task}" with an observed tool summary ("읽기 2 · 검색 1"); details show "담당 작업" with an "Agent 호출과 추정 연결" tag and "작업 요약" | `state.ts` (`linkSpawnCall`, `agentWorkSummary`, `workSummaryLabel`), `DetailsPanel.tsx`, `viewModel.ts` (`doneBubble`) | No payload carries an id tying `SubagentStart` to the parent's `tool_use_id`; the link is an inference and is labelled. No candidate → no task shown. `last_assistant_message` stays dropped |
+| 4 | Schema 3 → 4: new agent/call fields default to null in `upgradeState`; stored agents never get a task re-derived | `state.ts` | Idempotent, tested |
+
+DEMO fixture now includes the two `Agent` delegation calls (with `description`, `subagent_type`, one with `model: 'sonnet'`) before the two `SubagentStart`s and their `PostToolUse`s after the stops, so the demo shows the new bubbles and departures.
+
+Tests (`test/agent-task.test.ts`, 13 cases): ended session leaves and frees its room while staying in state; finished employee lingers with the task bubble then leaves, lead stays, restarted child returns; pending approval never hides; lead done bubble unchanged; session model from SessionStart and PostModelSwitch; delegation model on the child while the session model is untouched by tool payloads; no model → nothing invented; PostModelSwitch normalization; link by type and order across three parallel delegations; no candidate / finished call never reused / contradicting type excluded; Codex untyped spawn call; work summary with failures; schema 3 → 4 upgrade preserving records and staying idempotent. `test/viewModel.test.ts` room test updated (ended sessions are no longer "unseated", they are absent).
+
+Commands run (pass 5):
+
+```
+cd town
+npm install --legacy-peer-deps   # fresh clone on this PC
+npm run typecheck                # tsc client + server: no errors
+npx vitest run                   # Test Files 12 passed, Tests 132 passed
+npm run build                    # copy-assets 82 files; dist/client js ~1,508 kB (gzip ~415 kB)
+node scripts/browser-smoke.mjs   # 36/36 checks passed (msedge channel)
+```
+
+Not verified in pass 5: a live Claude Code session with the `PostModelSwitch` hook installed, and the real field names of `SubagentStart` (`agent_type`) versus the `Agent` tool's `subagent_type` on the installed CLI; the smoke test's own sessions never end, so the departure behaviour is covered by unit tests and the DEMO fixture only.
 
 ## Real CLI integration evidence (supervisor-run, not by this pass)
 

@@ -6,7 +6,7 @@ Reference docs consulted 2026-09-13: <https://code.claude.com/docs/en/hooks> (Cl
 
 - Node built-ins only; reads stdin JSON (≤1 MiB of bytes); redacts; POSTs to the server described by `<dataDir>/server.json` (loopback host required); spools on failure.
 - Total budget 1.5 s, request timeout 0.8 s, always exit 0, never writes to stdout. An empty stdout with exit 0 is the neutral response for both CLIs: no context injection, no permission decision, the action proceeds. Nothing from the payload is ever printed.
-- Forwarded fields (allowlist, control characters stripped): `session_id, hook_event_name, agent_id, agent_type, tool_name, tool_use_id, call_id, turn_id, prompt_id, permission_mode, model, reason, source, trigger, notification_type, target, stop_hook_active`, masked `cwd`, a bounded summary of `tool_input` (path-like fields, first line of a command, `apply_patch` file headers only, pattern/query/url/description), a bounded summary of `tool_response` (`exit_code`/`exitCode`/`returncode`, `is_error`/`isError`/`success`/`ok`, masked `error`), masked `error`/`message` (≤300/≤160 chars). Masking precedes truncation.
+- Forwarded fields (allowlist, control characters stripped): `session_id, hook_event_name, agent_id, agent_type, tool_name, tool_use_id, call_id, turn_id, prompt_id, permission_mode, model, from_model, to_model, reason, source, trigger, notification_type, target, stop_hook_active`, masked `cwd`, a bounded summary of `tool_input` (path-like fields, first line of a command, `apply_patch` file headers only, pattern/query/url/description/subagent_type/model), a bounded summary of `tool_response` (`exit_code`/`exitCode`/`returncode`, `is_error`/`isError`/`success`/`ok`, masked `error`), masked `error`/`message` (≤300/≤160 chars). Masking precedes truncation.
 - Dropped: `prompt`, `last_assistant_message`, `transcript_path`, `agent_transcript_path`, tool response bodies, patch bodies, file contents.
 - Spool: `<dataDir>/spool/<timestamp>-<rand>.json`, atomic write, 400 files / 512 KB bound, oldest dropped. Backlog is flushed in order before the current event; if backlog remains (or another hook is mid-flush), the current event is spooled behind it.
 
@@ -14,19 +14,20 @@ Reference docs consulted 2026-09-13: <https://code.claude.com/docs/en/hooks> (Cl
 
 | Hook | Installed | Mapped to | Notes |
 |---|---|---|---|
-| SessionStart | yes | session.started | `reason`/`source`, `model` kept; agent shown as idle until a turn starts |
+| SessionStart | yes | session.started | `reason`/`source`, `model` kept; agent shown as idle until a turn starts. Per the docs `model` is supplied **only** here and not always, so a session can legitimately show "모델 미제공" |
 | SessionEnd | yes | session.ended | ends session and all agents |
 | UserPromptSubmit | yes | turn.started | prompt text never forwarded; `prompt_id` used as turn id |
-| PreToolUse | yes | tool.started | keyed by (agent, `tool_use_id`); `agent_id` present → child agent |
+| PreToolUse | yes | tool.started | keyed by (agent, `tool_use_id`); `agent_id` present → child agent. For the `Agent`/`Task` tool the input's `description`, `subagent_type` and `model` are kept (the `prompt` is not) so a child that starts afterwards can be shown with its task and requested model |
 | PostToolUse | yes | tool.completed, or tool.failed when the response states an error (`isError`/`is_error`, non-zero `exit_code`, `success:false`, `error`) | Claude fires PostToolUse only after success, so no signal = completed |
 | PostToolUseFailure | yes | tool.failed | masked `error` |
 | PermissionRequest | yes | approval.requested | keyed by (agent, `tool_use_id`) |
 | PermissionDenied | yes | approval.resolved (denied) + tool denied | |
 | Notification | yes | approval.requested (`permission_prompt`, no tool id) / notification (`idle_prompt`, `agent_needs_input` → waiting for input) | |
 | Stop | yes | agent.response_completed (main) → also completes the turn | not session end |
-| SubagentStart | yes | agent.started (child, immediate parent = main, provider semantics) | |
-| SubagentStop | yes | agent.response_completed (child) | child stays as an idle character; parent turn untouched |
-| TaskCreated/TaskCompleted, TeammateIdle, PostToolBatch, Setup, compaction, model switch, worktree, elicitation hooks | no | (unknown if received) | not installed; Agent Teams / teammates are not modelled |
+| SubagentStart | yes | agent.started (child, immediate parent = main, provider semantics) | The payload carries no id tying the child to the parent's `Agent` tool_use_id. The reducer links the child to the oldest running, unlinked delegation call whose `subagent_type` does not contradict `agent_type`; the link is stored as `taskEvidence: 'inferred'` and the UI tags it "Agent 호출과 추정 연결". No candidate → no task shown |
+| SubagentStop | yes | agent.response_completed (child) | child shows "완료 · {task}" plus an observed tool summary for `DONE_LINGER_MS` (8 s), then leaves the office (state and panels keep it); parent turn untouched. `last_assistant_message` is still dropped |
+| PostModelSwitch | yes | notification (`model` = `to_model`) | updates the session model; `from_model → to_model` kept as a short note |
+| TaskCreated/TaskCompleted, TeammateIdle, PostToolBatch, Setup, compaction, PreModelSwitch, worktree, elicitation hooks | no | (unknown if received) | not installed; Agent Teams / teammates are not modelled |
 
 ## Codex
 
@@ -40,7 +41,7 @@ Reference docs consulted 2026-09-13: <https://code.claude.com/docs/en/hooks> (Cl
 | PermissionRequest | yes | approval.requested | resolved by a later outcome of the same call or, inferred, by turn end |
 | Stop | yes | agent.response_completed | `target` (Stop/SubagentStop) and `agent_id` decide the agent |
 | Interrupt | yes | turn.failed (`interrupted`) | shown as failure, never as success |
-| SubagentStart / SubagentStop | yes | agent.started / agent.response_completed | `session_id` is the parent session, `agent_id` the child; **immediate parent unknown** (nested agents are possible and the payload names no spawner) |
+| SubagentStart / SubagentStop | yes | agent.started / agent.response_completed | `session_id` is the parent session, `agent_id` the child; **immediate parent unknown** (nested agents are possible and the payload names no spawner). Task/model linking uses any running `spawn_agent`-style call in the session (inferred, see Claude row); the exact Codex spawn input field names are unverified |
 | PreCompact / PostCompact | no (mapped if received) | notification | |
 
 Not covered by design: hosted tools such as **WebSearch** (no local hook fires), `exec_command` output that arrives on a later `write_stdin` (the later PostToolUse carries the id it belongs to; a call left open when the response ended is "unresolved" and refined when the outcome arrives), transcript files (not a stable contract). Live Codex child-tool attribution has not been tested: `hook_runtime.rs` passes the subagent context to every tool request builder, so `agent_id` is expected on tool hooks inside a subagent, but this is an inference from source, not an observed payload.
