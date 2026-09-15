@@ -297,6 +297,7 @@ async function main() {
     await mobile.goto(base, { waitUntil: 'load' });
     await waitFor(() => mobile.evaluate(() => !!window.__agentTown?.scene?.ready), { label: 'mobile scene ready' });
     check('mobile shows tab bar and canvas', (await mobile.isVisible('[data-testid=tab-sessions]')) && (await mobile.isVisible('[data-testid=office-canvas]')));
+    check('completion chime toggle is present and on by default', await mobile.isChecked('[data-testid=sound-toggle]'));
     // 4 sessions by now (smoke-codex-2 was added during the pause test) = 5 characters.
     await waitFor(async () => (await mobile.evaluate(() => window.__agentTown.scene.characterCount())) === 5, { label: 'mobile characters' });
     await mobile.waitForTimeout(300);

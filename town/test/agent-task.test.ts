@@ -4,7 +4,7 @@
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { buildOfficeVM, DONE_LINGER_MS, doneBubble, isAgentHidden } from '../src/client/viewModel.js';
+import { buildOfficeVM, doneBubble, isAgentHidden } from '../src/client/viewModel.js';
 import { getOwn } from '../src/shared/dict.js';
 import { normalizeClaude } from '../src/shared/providers/claude.js';
 import {
@@ -52,7 +52,7 @@ describe('office visibility', () => {
     expect(Object.keys(sess(st, 'claude:a').agents).sort()).toEqual(['kid', 'main']);
   });
 
-  it('a finished employee lingers for DONE_LINGER_MS showing its task, then leaves; the lead stays', () => {
+  it('a finished employee stays (showing its task) until the user starts the next turn, then leaves; the lead stays', () => {
     const st = createInitialState();
     applyEvents(st, [
       ev('claude', { session_id: 's', hook_event_name: 'UserPromptSubmit', prompt_id: 'p1' }),
@@ -69,33 +69,39 @@ describe('office visibility', () => {
     const s = sess(st, 'claude:s');
     const kid = getOwn(s.agents, 'kid')!;
     const stoppedAt = Date.parse(kid.lastActivityAt);
-    // Just after the stop: still in the office, bubble says what it did.
+    // After the stop: still in the office, bubble says what it did - however long it takes.
     let vm = buildOfficeVM(st, noSel, filters, false, 6, stoppedAt + 1000);
     const c = vm.characters.find((x) => x.agentId === 'kid');
     expect(c).toBeDefined();
     expect(c!.status).toBe('done');
     expect(c!.bubble).toEqual({ title: '완료 · 쿠키 처리 코드 탐색', detail: '읽기 2 · 검색 1', extra: 0 });
-    expect(isAgentHidden(s, kid, stoppedAt + DONE_LINGER_MS - 1)).toBe(false);
-    // After the linger window: gone from the office, lead still there, state untouched.
-    vm = buildOfficeVM(st, noSel, filters, false, 6, stoppedAt + DONE_LINGER_MS + 1);
+    expect(isAgentHidden(s, kid, stoppedAt + 60 * 60 * 1000)).toBe(false);
+    // The lead finishing its response does not clear the employee either.
+    applyEvent(st, ev('claude', { session_id: 's', hook_event_name: 'Stop', prompt_id: 'p1' }));
+    vm = buildOfficeVM(st, noSel, filters, false, 6, stoppedAt + 5000);
+    expect(vm.characters.map((x) => x.agentId).sort()).toEqual(['kid', 'main']);
+    // The user starts the next turn: the previous task's employee leaves; state untouched.
+    applyEvent(st, ev('claude', { session_id: 's', hook_event_name: 'UserPromptSubmit', prompt_id: 'p2' }));
+    vm = buildOfficeVM(st, noSel, filters, false, 6, stoppedAt + 6000);
     expect(vm.characters.map((x) => x.agentId)).toEqual(['main']);
     expect(getOwn(s.agents, 'kid')!.lifecycle).toBe('idle');
     // A restarted child comes back immediately.
     applyEvent(st, ev('claude', { session_id: 's', hook_event_name: 'SubagentStart', agent_id: 'kid', agent_type: 'Explore' }));
-    vm = buildOfficeVM(st, noSel, filters, false, 6, stoppedAt + DONE_LINGER_MS + 5000);
+    vm = buildOfficeVM(st, noSel, filters, false, 6, stoppedAt + 7000);
     expect(vm.characters.map((x) => x.agentId).sort()).toEqual(['kid', 'main']);
   });
 
-  it('a finished employee with a pending approval or waiting for input never leaves early', () => {
+  it('a finished employee with a pending approval or waiting for input never leaves, even after a new turn', () => {
     const st = createInitialState();
     applyEvents(st, [
       ev('claude', { session_id: 's', hook_event_name: 'SubagentStart', agent_id: 'kid' }),
       ev('claude', { session_id: 's', hook_event_name: 'PreToolUse', agent_id: 'kid', tool_name: 'Bash', tool_use_id: 'b1', tool_input: { command: 'rm -rf build' } }),
       ev('claude', { session_id: 's', hook_event_name: 'PermissionRequest', agent_id: 'kid', tool_name: 'Bash', tool_use_id: 'b1' }),
+      ev('claude', { session_id: 's', hook_event_name: 'UserPromptSubmit', prompt_id: 'p2' }),
     ]);
     const s = sess(st, 'claude:s');
     const kid = getOwn(s.agents, 'kid')!;
-    expect(isAgentHidden(s, kid, Date.parse(kid.lastActivityAt) + 10 * DONE_LINGER_MS)).toBe(false);
+    expect(isAgentHidden(s, kid, Date.now())).toBe(false);
   });
 
   it('the lead of a finished session shows "응답 완료" without a fabricated task', () => {

@@ -6,9 +6,14 @@
  */
 import { useSyncExternalStore } from 'react';
 
+import { getOwn } from '../shared/dict.js';
 import type { AgentEvent, Provider } from '../shared/events.js';
+import { sessionKey } from '../shared/events.js';
 import type { Diagnostics, RetentionInfo } from '../shared/protocol.js';
-import { applyEvent, cloneState, createInitialState, type TownState, upgradeState } from '../shared/state.js';
+import { applyEvent, cloneState, createInitialState, type TownState, type TurnState, upgradeState } from '../shared/state.js';
+
+/** Fired when a live (hook) event ends a session's running turn. */
+export type TurnEndListener = (info: { sessionKey: string; status: Exclude<TurnState['status'], 'running'> }) => void;
 
 export type ConnectionStatus = 'connecting' | 'open' | 'reconnecting' | 'closed';
 export type ViewMode = 'live' | 'paused' | 'replay' | 'demo';
@@ -54,6 +59,8 @@ export interface StoreState {
   selection: Selection;
   filters: TimelineFilters;
   reduceMotion: boolean;
+  /** Play a chime when a session's turn ends (live events only, never DEMO/replay). */
+  soundEnabled: boolean;
   /** Camera focus request consumed by the scene. */
   focusRequest: { sessionKey: string; agentId: string | null; nonce: number } | null;
   cameraRequest: { kind: 'reset' | 'zoomIn' | 'zoomOut'; nonce: number } | null;
@@ -95,9 +102,18 @@ class TownStore {
         kinds: { tool: true, agent: true, approval: true, error: true, session: true },
       },
       reduceMotion: false,
+      soundEnabled: true,
       focusRequest: null,
       cameraRequest: null,
     };
+  }
+
+  private turnEndListeners = new Set<TurnEndListener>();
+
+  /** Subscribe to live turn endings (used for the completion chime). */
+  onTurnEnd(l: TurnEndListener): () => void {
+    this.turnEndListeners.add(l);
+    return () => this.turnEndListeners.delete(l);
   }
 
   subscribe = (l: Listener): (() => void) => {
@@ -131,7 +147,16 @@ class TownStore {
 
   applyLiveEvent(ev: AgentEvent): void {
     if (ev.ingestSeq <= this.state.live.lastSeq) return; // duplicate delivery
+    const key = sessionKey(ev.provider, ev.sessionId);
+    const before = getOwn(this.state.live.sessions, key)?.currentTurn;
+    const wasRunning = before?.status === 'running';
+    const beforeStart = before?.startedAt ?? null;
     applyEvent(this.state.live, ev);
+    const after = getOwn(this.state.live.sessions, key)?.currentTurn;
+    // A running turn that is now ended (and was not replaced by a newer turn) = the session finished its work.
+    if (wasRunning && after && after.startedAt === beforeStart && after.status !== 'running' && ev.source === 'hook') {
+      for (const l of this.turnEndListeners) l({ sessionKey: key, status: after.status });
+    }
     this.state.liveEvents.push(ev);
     if (this.state.liveEvents.length > MAX_LIVE_EVENTS) {
       this.state.liveEvents.splice(0, this.state.liveEvents.length - MAX_LIVE_EVENTS);
@@ -255,6 +280,10 @@ class TownStore {
 
   setReduceMotion(v: boolean): void {
     this.patch({ reduceMotion: v });
+  }
+
+  setSoundEnabled(v: boolean): void {
+    this.patch({ soundEnabled: v });
   }
 }
 

@@ -12,6 +12,7 @@ import {
 
 import { fetchReplayWindow } from '../connection.js';
 import { exitDemo, startDemo } from '../demo.js';
+import { playChime, saveSoundEnabled } from '../sound.js';
 import { store, useStore } from '../store.js';
 
 export function TopBar(): React.JSX.Element {
@@ -108,6 +109,21 @@ export function TopBar(): React.JSX.Element {
         <label className="toggle topbar-motion" title="캐릭터 이동 애니메이션 줄이기">
           <input type="checkbox" checked={s.reduceMotion} onChange={(e) => store.setReduceMotion(e.target.checked)} />
           이동 효과 축소
+        </label>
+        <label className="toggle topbar-sound" title="세션이 턴 작업을 마치면 알림음 (실시간 이벤트만, DEMO·이력 재생 제외)">
+          <input
+            type="checkbox"
+            checked={s.soundEnabled}
+            data-testid="sound-toggle"
+            onChange={(e) => {
+              const on = e.target.checked;
+              store.setSoundEnabled(on);
+              saveSoundEnabled(on);
+              // Preview inside the click: also unlocks audio for later chimes.
+              if (on) playChime('completed');
+            }}
+          />
+          완료 알림음
         </label>
       </div>
     </header>

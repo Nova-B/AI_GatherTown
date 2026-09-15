@@ -20,20 +20,23 @@ import type { Selection, TimelineFilters } from './store.js';
 export const STALE_AFTER_MS = 10 * 60 * 1000;
 
 /**
- * A finished employee (subagent whose response ended) stays in the office
- * this long after its last activity, showing what it did, then leaves.
- * Ended sessions and ended agents leave immediately. The panels still list
- * every agent; only the office scene hides them.
+ * Office visibility. Ended sessions and ended agents leave immediately. A
+ * finished employee (subagent whose response ended) stays at its desk,
+ * showing what it did, until the user starts the next turn of that session
+ * (an observed `turn.started` after the employee's last activity); then the
+ * previous task's employees clear out. The panels still list every agent;
+ * only the office scene hides them. `now` is unused here but kept so the
+ * rule can become time-based again without changing callers.
  */
-export const DONE_LINGER_MS = 8000;
-
-/** True when the agent should not be drawn in the office at `now`. */
-export function isAgentHidden(s: SessionState, a: AgentState, now: number): boolean {
+export function isAgentHidden(s: SessionState, a: AgentState, _now: number): boolean {
   if (s.lifecycle === 'ended' || a.lifecycle === 'ended') return true;
   if (a.role !== 'subagent') return false;
   if (a.lifecycle === 'active' || a.pendingApprovalIds.length > 0 || a.waitingForInput) return false;
+  const turn = s.currentTurn;
+  if (!turn) return false;
+  const turnStart = Date.parse(turn.startedAt);
   const last = Date.parse(a.lastActivityAt);
-  return Number.isFinite(last) && now - last > DONE_LINGER_MS;
+  return Number.isFinite(turnStart) && Number.isFinite(last) && turnStart >= last;
 }
 
 /** Bubble for an employee whose response ended: the task it was given and what it did. */

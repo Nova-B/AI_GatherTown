@@ -212,7 +212,8 @@ code {
   display: none;
 }
 
-.app-narrow .topbar-motion {
+.app-narrow .topbar-motion,
+.app-narrow .topbar-sound {
   display: none;
 }
 

@@ -1,8 +1,30 @@
-# Implementation report - Agent Town (pass 5: office departures, models, subagent tasks)
+# Implementation report - Agent Town (pass 6: approval prompt fix, completion chime, departure timing)
 
-Date: 2026-09-13 (passes 1-4), 2026-09-14 (pass 5). Environment: Windows 11 Pro 10.0.26200, Node v22.17.x, npm 10.9.2. Repository: pixel-agents at `3537e140c2094761beae748592aeb92ece8edfdd` (untouched) plus the new `town/` application, `AGENT_TOWN.md` and `Start-AgentTown.cmd`.
+Date: 2026-09-13 (passes 1-4), 2026-09-14 (pass 5), 2026-09-15 (pass 6). Environment: Windows 11 Pro 10.0.26200, Node v22.17.x, npm 10.9.2. Repository: pixel-agents at `3537e140c2094761beae748592aeb92ece8edfdd` (untouched) plus the new `town/` application, `AGENT_TOWN.md` and `Start-AgentTown.cmd`.
 
-This report covers the first vertical slice, the pass-2 supervisor corrections, the pass-3 late-event corrections, the pass-4 checkpoint compatibility fix and the pass-5 user-requested UI changes. It is **not** the whole six-week plan: no Agent Teams/teammates, no transcript reading, no usage display, no multi-room walking, no WSL/remote hosts.
+This report covers the first vertical slice, the pass-2 supervisor corrections, the pass-3 late-event corrections, the pass-4 checkpoint compatibility fix, the pass-5 user-requested UI changes and the pass-6 fixes. The retrospect button lives on branch `feature/retrospect-button` (its own report section is on that branch). It is **not** the whole six-week plan: no Agent Teams/teammates, no transcript reading, no usage display, no multi-room walking, no WSL/remote hosts.
+
+## Pass 6: stale "승인 대기", completion chime, employee departure timing (user feedback 2026-09-15)
+
+| # | Request | Cause / change | Where |
+|---|---|---|---|
+| 1 | After the user approved a command, the character still showed "승인 대기" while the command ran | Claude Code announces one prompt twice: `PermissionRequest` (with `tool_use_id`) and `Notification: permission_prompt` (no id). The id-less record could only be resolved by turn end, so it outlived the approval. Now it is resolved (decision `unknown`, evidence `inferred`) as soon as the same agent is observed to proceed - a known-id request, any tool start/outcome, an observed approval resolution - and is not created while a known-id approval of that agent is pending. Known-id approvals keep their exact rule | `src/shared/state.ts` (`resolveIdlessApprovals`, `hasPendingKnownApproval`) |
+| 2 | A sound when a session finishes its work | `store.onTurnEnd` fires when a live hook event turns a running turn into completed/failed/interrupted (same turn, not a replacement). `client/sound.ts` synthesizes a two-note chime (completed) or a low note (failed) with the Web Audio API; toolbar toggle "완료 알림음" persisted in `localStorage`, on by default, preview on enable (which also satisfies the browser's user-gesture rule). DEMO and replay never chime | `src/client/store.ts`, `src/client/sound.ts`, `main.tsx`, `TopBar.tsx` |
+| 3 | Employees disappeared 8 s after finishing; they should leave when the user starts the next task | `isAgentHidden`: a finished employee stays until the session's `currentTurn.startedAt` is at or after the employee's last activity, i.e. the next `UserPromptSubmit`. Active employees, pending approvals and input waits never hide. `DONE_LINGER_MS` removed | `src/client/viewModel.ts` |
+
+Tests: `test/approval-prompt.test.ts` (5 cases: Notification → PermissionRequest → PostToolUse never stuck; PermissionRequest → Notification creates no second record; Notification-only cleared by the agent's next tool, labelled inferred; a known-id approval is never cleared by another tool; per-agent scoping). `test/agent-task.test.ts` departure cases rewritten for the new rule (stays through the lead's Stop, leaves on the next UserPromptSubmit, returns on restart; pending approval survives a new turn). Smoke: chime toggle present and on by default.
+
+Commands run (pass 6):
+
+```
+cd town
+npm run typecheck                # no errors
+npx vitest run                   # Test Files 13 passed, Tests 137 passed
+npm run build                    # dist/client js ~1,510 kB (gzip ~416 kB)
+node scripts/browser-smoke.mjs   # 37/37 checks passed (msedge channel)
+```
+
+Not verified live: the chime in a real browser session (unit tests cannot exercise Web Audio; the smoke test only checks the toggle), and the exact ordering of `PermissionRequest` vs `Notification` on the installed CLI - both orders are handled.
 
 ## Pass 5: departures, per-agent model, subagent task (user feedback 2026-09-14)
 

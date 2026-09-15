@@ -575,6 +575,29 @@ function inferApprovalsOnTurnEnd(s: SessionState, a: AgentState, ev: AgentEvent)
   }
 }
 
+/**
+ * Claude Code announces one permission prompt twice: `PermissionRequest`
+ * (with the tool_use_id) and `Notification: permission_prompt` (without any
+ * id). The id-less record cannot be matched to an outcome, so on its own it
+ * would stay pending until the turn ends - long after the user answered and
+ * the tool ran ("승인 대기" shown while the command is executing). It is
+ * therefore resolved (decision unknown, evidence inferred) as soon as the
+ * agent is observed to proceed: a known-id request for the same agent (the
+ * same prompt, now tracked precisely), any tool start/outcome of that agent,
+ * or an observed approval resolution. Known-id approvals are never touched
+ * by this; they still wait for their own outcome or PermissionDenied.
+ */
+function resolveIdlessApprovals(s: SessionState, a: AgentState, ev: AgentEvent): void {
+  for (const id of [...a.pendingApprovalIds]) {
+    const ap = getOwn(s.approvals, id);
+    if (ap && !ap.idKnown) resolveApproval(s, id, ev, 'unknown', 'inferred');
+  }
+}
+
+function hasPendingKnownApproval(s: SessionState, a: AgentState): boolean {
+  return a.pendingApprovalIds.some((id) => getOwn(s.approvals, id)?.idKnown === true);
+}
+
 /** Complete the session's current turn exactly once. */
 function completeTurn(
   s: SessionState,
@@ -717,17 +740,29 @@ export function applyEvent(state: TownState, ev: AgentEvent): TownState {
       if (s.lifecycle !== 'ended') s.lifecycle = 'active';
       setOwn(s.toolCalls, key.id, newCall(ev, key, 'running'));
       a.activeToolIds.push(key.id);
+      // The agent moved on: an id-less permission prompt is no longer pending.
+      resolveIdlessApprovals(s, a, ev);
       break;
     }
     case 'tool.completed':
     case 'tool.failed': {
       finishTool(s, ev, outcomeToStatus(ev.payload.outcome, ev.kind));
+      resolveIdlessApprovals(s, ensureAgent(s, ev), ev);
       break;
     }
     case 'approval.requested': {
       const a = ensureAgent(s, ev);
       const key = callKey(ev);
       if (hasOwn(s.approvals, key.id)) {
+        s.duplicatesIgnored++;
+        break;
+      }
+      if (key.known) {
+        // The precise request supersedes the id-less prompt notification of the same agent.
+        resolveIdlessApprovals(s, a, ev);
+      } else if (hasPendingKnownApproval(s, a)) {
+        // The prompt is already tracked by its tool id; a second, id-less
+        // record would only linger. Counted, not created.
         s.duplicatesIgnored++;
         break;
       }
@@ -767,6 +802,7 @@ export function applyEvent(state: TownState, ev: AgentEvent): TownState {
         break;
       }
       const key = callKey(ev);
+      resolveIdlessApprovals(s, a, ev);
       if (hasOwn(s.approvals, key.id)) {
         resolveApproval(s, key.id, ev, decision, 'observed');
       } else {
