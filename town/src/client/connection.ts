@@ -7,6 +7,7 @@
  */
 import type { AgentEvent } from '../shared/events.js';
 import type { ServerMessage } from '../shared/protocol.js';
+import type { RetrospectMetrics, RetrospectScope } from '../shared/retrospect.js';
 import type { TownState } from '../shared/state.js';
 import { store } from './store.js';
 
@@ -53,6 +54,26 @@ export interface ReplayWindow {
 /** Last N events plus the state just before them (correct even after retention). */
 export async function fetchReplayWindow(): Promise<ReplayWindow> {
   return apiGet<ReplayWindow>('/api/replay?limit=5000');
+}
+
+export interface RetrospectResponse {
+  markdown: string;
+  metrics: RetrospectMetrics;
+  fromSeq: number;
+  toSeq: number;
+  eventCount: number;
+  truncated: boolean;
+  historyFromSeq: number;
+}
+
+/** Retrospective material for one session, built server-side from stored events only. */
+export async function fetchRetrospect(
+  sessionKey: string,
+  opts: { scope: RetrospectScope; toSeq: number | null },
+): Promise<RetrospectResponse> {
+  const q = new URLSearchParams({ session: sessionKey, scope: opts.scope });
+  if (opts.toSeq !== null) q.set('to', String(opts.toSeq));
+  return apiGet<RetrospectResponse>(`/api/retrospect?${q.toString()}`);
 }
 
 function scheduleReconnect(): void {

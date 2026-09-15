@@ -236,6 +236,19 @@ async function main() {
     // Selection via session list -> agent row -> details
     await page.locator('[data-testid=session-item]').filter({ hasText: 'checkout' }).first().click();
     await page.waitForSelector('[data-testid=session-details]');
+    // Retrospect modal: server-built Markdown from stored events, user notes merged client-side.
+    await page.click('[data-testid=retrospect-btn]');
+    await page.waitForSelector('[data-testid=retrospect-text]');
+    await page.fill('[data-testid=retrospect-notes]', '팀장이 파일을 하나씩 읽었다');
+    const retroText = await page.inputValue('[data-testid=retrospect-text]');
+    check(
+      'retrospect material has the header, the user note under §0, the timeline and the questions',
+      retroText.includes('# 작업 회고 요청') && retroText.includes('## 0. 사용자 관찰') && retroText.includes('팀장이 파일을 하나씩 읽었다') && retroText.includes('Read') && retroText.includes('## 4. 회고 질문'),
+      retroText.slice(0, 200),
+    );
+    check('retrospect material carries no prompt text or file contents', !retroText.includes('prompt') && !retroText.includes('transcript'));
+    await page.click('[data-testid=retrospect-close]');
+    await page.waitForSelector('[data-testid=retrospect-modal]', { state: 'detached' });
     await page.locator('[data-testid=agent-row]').filter({ hasText: '직원' }).first().click();
     await page.waitForSelector('[data-testid=agent-details]');
     const status = await page.textContent('[data-testid=agent-status]');

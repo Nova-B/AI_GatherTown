@@ -1,4 +1,4 @@
-import { Crosshair } from 'lucide-react';
+import { Crosshair, NotebookPen } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 import { ACTIVITY_LABEL_KO } from '../../shared/activity.js';
@@ -16,6 +16,7 @@ import { elapsed, relTime } from '../format.js';
 import { store, useStore } from '../store.js';
 import { isStale, PROVIDER_LABEL, roleLabel } from '../viewModel.js';
 import { DiagnosticsPanel } from './DiagnosticsPanel.js';
+import { RetrospectModal } from './RetrospectModal.js';
 
 function useNow(): number {
   const [now, setNow] = useState(Date.now());
@@ -51,14 +52,37 @@ export function DetailsPanel(): React.JSX.Element {
 }
 
 function SessionDetails({ session, now }: { session: SessionState; now: number }): React.JSX.Element {
+  const s = useStore();
   const agents = ownValues(session.agents);
   const stale = isStale(session, now);
+  const [retro, setRetro] = useState(false);
+  const isDemo = session.source === 'demo' || s.mode === 'demo';
+  // In paused/replay views the material stops at what the view shows.
+  const toSeq = s.mode === 'live' ? null : store.viewState().lastSeq;
   return (
     <div className="section" data-testid="session-details">
       <div className="section-head">
         <h2>세션</h2>
         <span className={`badge badge-${session.provider}`}>{PROVIDER_LABEL[session.provider]}</span>
+        <button
+          type="button"
+          className="btn tiny"
+          onClick={() => setRetro(true)}
+          disabled={isDemo}
+          title={isDemo ? 'DEMO 데이터로는 회고 자료를 만들지 않습니다' : '관측된 실행 과정을 회고용 자료로 정리해 복사'}
+          data-testid="retrospect-btn"
+        >
+          <NotebookPen size={13} /> 작업 회고 자료
+        </button>
       </div>
+      {retro && (
+        <RetrospectModal
+          sessionKey={session.key}
+          title={session.projectName ?? session.sessionId.slice(0, 12)}
+          toSeq={toSeq}
+          onClose={() => setRetro(false)}
+        />
+      )}
       <dl className="kv">
         <dt>프로젝트</dt>
         <dd title={session.cwd ?? ''}>{session.projectName ?? '-'}</dd>

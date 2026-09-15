@@ -1,8 +1,33 @@
-# Implementation report - Agent Town (pass 5: office departures, models, subagent tasks)
+# Implementation report - Agent Town (pass 6: retrospect material)
 
-Date: 2026-09-13 (passes 1-4), 2026-09-14 (pass 5). Environment: Windows 11 Pro 10.0.26200, Node v22.17.x, npm 10.9.2. Repository: pixel-agents at `3537e140c2094761beae748592aeb92ece8edfdd` (untouched) plus the new `town/` application, `AGENT_TOWN.md` and `Start-AgentTown.cmd`.
+Date: 2026-09-13 (passes 1-4), 2026-09-14 (pass 5), 2026-09-15 (pass 6). Environment: Windows 11 Pro 10.0.26200, Node v22.17.x, npm 10.9.2. Repository: pixel-agents at `3537e140c2094761beae748592aeb92ece8edfdd` (untouched) plus the new `town/` application, `AGENT_TOWN.md` and `Start-AgentTown.cmd`.
 
-This report covers the first vertical slice, the pass-2 supervisor corrections, the pass-3 late-event corrections, the pass-4 checkpoint compatibility fix and the pass-5 user-requested UI changes. It is **not** the whole six-week plan: no Agent Teams/teammates, no transcript reading, no usage display, no multi-room walking, no WSL/remote hosts.
+This report covers the first vertical slice, the pass-2 supervisor corrections, the pass-3 late-event corrections, the pass-4 checkpoint compatibility fix, the pass-5 user-requested UI changes and the pass-6 retrospect button. It is **not** the whole six-week plan: no Agent Teams/teammates, no transcript reading, no usage display, no multi-room walking, no WSL/remote hosts.
+
+## Pass 6: "작업 회고 자료" button (design: MindPalace `809_Dev/AI_GatherTown/Agent_Town_작업회고_버튼_설계.md`, method A)
+
+Request: a button that hands the AI its own execution process so it can reflect on agent use, parallelism and waits. Implemented as **method A** of the design note: the server builds a Markdown document from stored events, the user adds their own observations first, copies the text and pastes it into the CLI session that did the work. No LLM call from Agent Town, no outbound traffic, no API key.
+
+| Part | Where | Notes |
+|---|---|---|
+| Builder | `src/shared/retrospect.ts` (`buildRetrospect`, `withUserNotes`, `fmtDuration`) | Pure. Segments turns from `turn.started`/`turn.completed`/`turn.failed`/root `agent.response_completed`; time-weighted tool concurrency (max, mean, solo ratio); peak concurrent subagents; approval wait sum; input-wait notifications. Candidates: serial exploration chains (≥3 read/search calls of one agent back to back within 3 s), lead-heavy exploration (≥6 lead read/search calls with no delegation, or ≥70 % of exploration), light delegations (finished subagent with ≤2 tools), repeated failures (same agent/tool/target failed ≥2, with "후 성공" when a later call completed), approval waits, exploration-only delegations on the session model. Every candidate line ends with the question it raises; the section title says "결론 아님" |
+| Endpoint | `GET /api/retrospect` in `src/server/http.ts`; `EventStore.listSession` | Browser session token required (same as `/api/replay`); `session`, `scope`, `from`, `to`; demo sessions 400, unknown/empty 404; bounded by `MAX_LIST_LIMIT` (5000, `truncated` flag) |
+| UI | `src/client/components/RetrospectModal.tsx`, button in `DetailsPanel` (`SessionDetails`) | Notes box (browser-only, merged under §0 by `withUserNotes`), scope radios, metrics chips, read-only Markdown, copy (clipboard API with `execCommand` fallback), Escape/backdrop close, full-screen on narrow viewports. Disabled for DEMO. Paused/replay views bound `to` to the view's last seq |
+| Docs | `docs/architecture.md` (security model, UI) | |
+
+Tests: `test/retrospect.test.ts` (11 cases: turn segmentation and counts, approval wait, parallelism from intervals, all six candidate kinds on one fixture, Markdown structure and the "no prompt/transcript" property, last-turn scope, seq upper bound with partial-history flag, unknown/demo/empty refusals, other sessions ignored, empty-candidate wording, notes merge, duration formatting) and `test/retrospect-api.test.ts` (4 cases: 401 without token, session-scoped Markdown/metrics with masked home and no foreign session, scope/bound handling, malformed keys incl. `__proto__`). Browser smoke gained two checks (modal opens from session details, note lands under §0, timeline and questions present, no prompt/transcript text).
+
+Commands run (pass 6):
+
+```
+cd town
+npm run typecheck                # no errors
+npx vitest run                   # Test Files 14 passed, Tests 147 passed
+npm run build                    # dist/client js ~1,514 kB (gzip ~417 kB)
+node scripts/browser-smoke.mjs   # 38/38 checks passed (msedge channel)
+```
+
+Not done / open (from the design note's unresolved list): the "serial chain" heuristic cannot see input dependencies between calls, so false positives are expected and the wording says so; Codex subagent trees show session membership only; retrospect results are not stored anywhere (the CLI conversation holds them); method B (in-app LLM call) is not built and would need the "no outbound" principle revisited. The design note's §1 (the user's own answers) was still empty when this pass was built; the scope and wording follow the note's LLM proposal and should be revisited once those answers exist.
 
 ## Pass 5: departures, per-agent model, subagent task (user feedback 2026-09-14)
 

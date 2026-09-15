@@ -107,6 +107,22 @@ export class EventStore {
     return this.rowsToEvents(rows);
   }
 
+  /** One session's events with seq in (sinceSeq, untilSeq], ascending, bounded. */
+  listSession(
+    provider: string,
+    sessionId: string,
+    sinceSeq: number,
+    untilSeq: number,
+    limit: number,
+  ): AgentEvent[] {
+    const rows = this.db
+      .prepare(
+        'SELECT seq, json FROM events WHERE provider = ? AND session_id = ? AND seq > ? AND seq <= ? ORDER BY seq ASC LIMIT ?',
+      )
+      .all(provider, sessionId, sinceSeq, untilSeq, limit) as Array<{ seq: number; json: string }>;
+    return this.rowsToEvents(rows);
+  }
+
   /** Iterate all events after sinceSeq in pages (bounded memory). */
   *iterate(sinceSeq = 0, pageSize = 2000): Generator<AgentEvent> {
     let cursor = sinceSeq;

@@ -25,6 +25,8 @@ Then open `http://127.0.0.1:4317/`.
 
 With no hooks installed you will see the empty office. Click **DEMO** to play a bundled fixture (clearly badged, never persisted) to see what a live session looks like.
 
+Select a session and click **작업 회고 자료** to get a Markdown summary of what was observed (turns, agents, tools, parallelism, waits, review candidates). Write your own observations first, copy the text and paste it into the CLI session that did the work to ask for a retrospective. Agent Town never calls an LLM itself.
+
 ## Connect your CLIs (per project)
 
 Hooks are installed **per project folder**, never into user-wide settings:

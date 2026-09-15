@@ -30,6 +30,8 @@ import type {
   ProviderDiagnostics,
   ServerMessage,
 } from '../shared/protocol.js';
+import { getOwn } from '../shared/dict.js';
+import { buildRetrospect, type RetrospectScope } from '../shared/retrospect.js';
 import { applyEvent, type TownState } from '../shared/state.js';
 import { APP_VERSION, type ServerConfig } from './config.js';
 import { ingestEnvelope, parseEnvelopes } from './ingest.js';
@@ -471,6 +473,33 @@ export async function startServer(cfg: ServerConfig, store: EventStore): Promise
           truncated: events.length === limit && firstSeq > store.firstSeq(),
           historyFromSeq: state.historyFromSeq,
         });
+        return;
+      }
+      if (pathname === '/api/retrospect') {
+        // Retrospective material for one session: Markdown built from the
+        // stored events only (no outbound call, no prompts). The user's own
+        // notes are added client-side and never reach the server.
+        const key = url.searchParams.get('session') ?? '';
+        const session = getOwn(state.sessions, key);
+        if (!session) {
+          json(res, 404, { error: 'unknown session' });
+          return;
+        }
+        if (session.source === 'demo') {
+          json(res, 400, { error: 'demo session' });
+          return;
+        }
+        const scopeParam = url.searchParams.get('scope');
+        const scope: RetrospectScope = scopeParam === 'last-turn' ? 'last-turn' : 'all';
+        const from = safeInt(url.searchParams.get('from'), 0, 0, Number.MAX_SAFE_INTEGER);
+        const to = safeInt(url.searchParams.get('to'), Number.MAX_SAFE_INTEGER, 1, Number.MAX_SAFE_INTEGER);
+        const events = store.listSession(session.provider, session.sessionId, from, to, MAX_LIST_LIMIT);
+        const result = buildRetrospect(state, events, { sessionKey: key, scope, fromSeq: from, toSeq: to });
+        if ('error' in result) {
+          json(res, result.error === 'no-events' ? 404 : 400, { error: result.error });
+          return;
+        }
+        json(res, 200, { ...result, truncated: events.length === MAX_LIST_LIMIT, historyFromSeq: state.historyFromSeq });
         return;
       }
       if (pathname === '/api/diagnostics') {
