@@ -228,6 +228,39 @@ export function assignRooms(
   return { roomed, unseated: sessions.filter((s) => !(s.key in map)), map };
 }
 
+/** Session list groups, in display order. */
+export type SessionGroup = 'working' | 'idle' | 'ended';
+
+export const SESSION_GROUP_LABEL_KO: Record<SessionGroup, string> = {
+  working: '진행 중',
+  idle: '대기 중',
+  ended: '종료',
+};
+
+/**
+ * 진행 중 = a running turn, a running tool or a pending approval (it needs
+ * the user or is doing work); 대기 중 = active but nothing running (stale
+ * ones sort last inside the group); 종료 = SessionEnd received.
+ */
+export function sessionGroup(s: SessionState): SessionGroup {
+  if (s.lifecycle === 'ended') return 'ended';
+  if (s.currentTurn?.status === 'running') return 'working';
+  for (const a of ownValues(s.agents)) {
+    if (a.activeToolIds.length > 0 || a.pendingApprovalIds.length > 0) return 'working';
+  }
+  return 'idle';
+}
+
+const GROUP_ORDER: Record<SessionGroup, number> = { working: 0, idle: 1, ended: 2 };
+
+/** Sort for the session list: group order, then non-stale before stale, then most recent activity first. */
+export function sortSessions(sessions: SessionState[], now: number): SessionState[] {
+  return sessions
+    .map((s, i) => ({ s, i, g: GROUP_ORDER[sessionGroup(s)], stale: isStale(s, now) ? 1 : 0, t: Date.parse(s.lastEventAt) || 0 }))
+    .sort((a, b) => a.g - b.g || a.stale - b.stale || b.t - a.t || b.i - a.i)
+    .map((x) => x.s);
+}
+
 export function isStale(s: SessionState, now: number): boolean {
   if (s.lifecycle === 'ended') return false;
   const t = Date.parse(s.lastEventAt);

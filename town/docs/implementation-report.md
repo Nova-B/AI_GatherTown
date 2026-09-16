@@ -20,6 +20,7 @@ This report covers the first vertical slice, the pass-2 supervisor corrections, 
 | 3 | Do not lump helpers as "직원"; parallel work is not people | Helpers labelled by requested type ("탐색 담당 · Explore", "설계 담당 · Plan", "실무 담당 · general-purpose", "{type} 담당") with a per-type name-tag colour and a sprite that is never the lead's. A tool call never creates a character; parallel calls of one agent read "Read(읽기) · 병렬 3" in the bubble, "⇉3" on the tag, "병렬 N" in the agent row and "병렬 실행" in details. Stop-only agents get `startObserved: false`, are listed with "시작 미관측" and are not drawn | `viewModel.ts` (`roleLabel`, `agentTagColor`, `helperSprite`, `isAgentHidden`), `OfficeScene.ts`, `state.ts`, `DetailsPanel.tsx` |
 | 4 | Tool names are not self-explanatory | `activity.toolLabel` → "Read(읽기)", "Grep(내용 검색)", "Bash(명령 실행)", "Skill(스킬 실행)", "apply_patch(패치 적용)", "SubagentHandback(결과 넘김)", MCP as "search(MCP server)"; unknown names stay bare. Used in bubbles, details (with a tooltip) and the timeline. `SubagentHandback`/`SendMessage`/`ListAgents` classified as `agent` | `activity.ts`, `viewModel.ts`, `DetailsPanel.tsx`, `Timeline.tsx` |
 | 5 | Schema 4 → 5 | `startObserved` (default true for stored agents), `TurnState.endEvidence` (null while running, `observed` otherwise) | `state.ts` |
+| 6 | Session list order (follow-up the same day) | 진행 중 → 대기 중 → 종료 with group captions; inside a group non-stale before stale, then most recent activity first (`sessionGroup`, `sortSessions`; `test/session-order.test.ts`, 2 cases) | `viewModel.ts`, `SessionList.tsx` |
 
 Tests: `test/interrupt.test.ts` (11 cases: new prompt closes the open turn and unresolves its tools with a late outcome still refining; same-id re-delivery is a duplicate; helpers active at Esc go idle and leave, tool activity brings one back; idle_prompt ends the turn only without a pending approval; Stop stays observed; stop-only agent hidden until it uses a tool; tool labels incl. MCP/unknown/null; role labels for Explore/Plan/general-purpose/custom/untyped, no "직원", distinct colours and sprites; parallel bubble/label/extra; schema 4 → 5 idempotent). Smoke updated for the new bubble text and the Explore row label.
 
@@ -29,7 +30,7 @@ Commands run (pass 7):
 cd town
 node inspect-db.mjs (read-only, scratch)   # 72 events, 3 sessions - findings above
 npm run typecheck                          # no errors
-npx vitest run                             # Test Files 14 passed, Tests 148 passed
+npx vitest run                             # Test Files 15 passed, Tests 150 passed (after the session-order follow-up)
 npm run build                              # dist/client js ~1,514 kB (gzip ~417 kB)
 node scripts/browser-smoke.mjs             # 37/37 checks passed (msedge channel)
 ```

@@ -501,6 +501,28 @@ code {
   opacity: 0.7;
 }
 
+.session-group {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: var(--muted);
+  margin: 8px 0 4px;
+  padding-left: 2px;
+  list-style: none;
+}
+
+.session-group:first-child {
+  margin-top: 0;
+}
+
+.session-group-working {
+  color: var(--teal);
+}
+
+.session-group-ended {
+  color: var(--muted);
+}
+
 .session-item:focus-visible {
   outline: 2px solid var(--teal);
 }

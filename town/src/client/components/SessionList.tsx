@@ -1,10 +1,11 @@
 import { Crosshair } from 'lucide-react';
+import { Fragment } from 'react';
 
 import { getOwn, ownValues } from '../../shared/dict.js';
 import { agentDisplayStatus, type SessionState } from '../../shared/state.js';
 import { relTime } from '../format.js';
 import { store, useStore } from '../store.js';
-import { isStale, PROVIDER_LABEL } from '../viewModel.js';
+import { isStale, PROVIDER_LABEL, SESSION_GROUP_LABEL_KO, type SessionGroup, sessionGroup, sortSessions } from '../viewModel.js';
 
 function lifecycleLabel(s: SessionState, stale: boolean): string {
   if (s.lifecycle === 'ended') return '종료';
@@ -20,11 +21,13 @@ export function SessionList(): React.JSX.Element {
   const s = useStore();
   const view = store.viewState();
   const now = Date.now();
-  const sessions = view.sessionOrder
-    .map((k) => getOwn(view.sessions, k))
-    .filter((x): x is SessionState => !!x && s.filters.providers[x.provider])
-    .slice()
-    .reverse();
+  const sessions = sortSessions(
+    view.sessionOrder
+      .map((k) => getOwn(view.sessions, k))
+      .filter((x): x is SessionState => !!x && s.filters.providers[x.provider]),
+    now,
+  );
+  let lastGroup: SessionGroup | null = null;
   return (
     <div className="section">
       <div className="section-head">
@@ -55,10 +58,19 @@ export function SessionList(): React.JSX.Element {
                   : sess.currentTurn?.status === 'running'
                     ? 'working'
                     : 'idle';
+          const group = sessionGroup(sess);
+          const showHeader = group !== lastGroup;
+          lastGroup = group;
           return (
+            <Fragment key={sess.key}>
+              {showHeader && (
+                <li role="presentation" className={`session-group session-group-${group}`} data-testid="session-group">
+                  {SESSION_GROUP_LABEL_KO[group]}
+                </li>
+              )}
             <li
-              key={sess.key}
               className={`session-item ${selected ? 'selected' : ''} ${sess.lifecycle === 'ended' ? 'ended' : ''}`}
+              data-group={group}
               role="option"
               aria-selected={selected}
               tabIndex={0}
@@ -102,6 +114,7 @@ export function SessionList(): React.JSX.Element {
               </div>
               {sess.source === 'demo' && <span className="demo-tag">DEMO</span>}
             </li>
+            </Fragment>
           );
         })}
       </ul>
