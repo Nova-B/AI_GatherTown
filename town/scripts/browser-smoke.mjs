@@ -212,7 +212,7 @@ async function main() {
     }, { label: '4 characters' });
     check('four characters (claude main + subagent, codex main, quiet main)', chars === 4);
     const snap = await page.evaluate(() => window.__agentTown.scene.characterSnapshot());
-    check('bubbles show tool names', snap.some((c) => c.bubble === 'Read') && snap.some((c) => c.bubble === 'Grep'), JSON.stringify(snap.map((c) => [c.key, c.status, c.bubble])));
+    check('bubbles show tool names with a Korean explanation', snap.some((c) => c.bubble === 'Read(읽기)') && snap.some((c) => c.bubble === 'Grep(내용 검색)'), JSON.stringify(snap.map((c) => [c.key, c.status, c.bubble])));
     check('codex main shows approval wait', snap.some((c) => c.key.includes('smoke-codex-1') && c.status === 'awaiting_approval'));
     check('a bare SessionStart is idle with no bubble (no fabricated work)', snap.some((c) => c.key.includes('smoke-codex-quiet') && c.status === 'idle' && c.bubble === null));
     await page.waitForTimeout(700);
@@ -236,10 +236,10 @@ async function main() {
     // Selection via session list -> agent row -> details
     await page.locator('[data-testid=session-item]').filter({ hasText: 'checkout' }).first().click();
     await page.waitForSelector('[data-testid=session-details]');
-    await page.locator('[data-testid=agent-row]').filter({ hasText: '직원' }).first().click();
+    await page.locator('[data-testid=agent-row]').filter({ hasText: '탐색 담당 · Explore' }).first().click();
     await page.waitForSelector('[data-testid=agent-details]');
     const status = await page.textContent('[data-testid=agent-status]');
-    check('subagent details show working status with Grep running', status?.includes('작업 중') && (await page.textContent('[data-testid=running-tools]'))?.includes('Grep'), status ?? '');
+    check('subagent details show working status with Grep running', status?.includes('작업 중') && (await page.textContent('[data-testid=running-tools]'))?.includes('Grep(내용 검색)'), status ?? '');
     check('Claude child shows main as immediate parent (provider semantics)', (await page.textContent('[data-testid=agent-parent]'))?.includes('팀장'));
     await page.screenshot({ path: path.join(outDir, 'desktop-selected.png') });
 

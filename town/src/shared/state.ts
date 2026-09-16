@@ -121,6 +121,14 @@ export interface AgentState {
   taskEvidence: 'inferred' | null;
   /** Internal key of the linked delegation call. */
   taskToolId: string | null;
+  /**
+   * False when the agent is known only from its response ending (a
+   * SubagentStop with no SubagentStart and no tool activity). Such an agent
+   * did nothing observable, so the office does not draw it; the panels list
+   * it with a "시작 미관측" tag. Becomes true on agent.started or any tool
+   * activity.
+   */
+  startObserved: boolean;
 }
 
 export type SessionLifecycle = 'active' | 'ended' | 'unknown';
@@ -130,6 +138,12 @@ export interface TurnState {
   startedAt: string;
   status: 'running' | 'completed' | 'failed' | 'interrupted';
   endedAt: string | null;
+  /**
+   * 'observed' when a Stop/Interrupt/turn end named this turn; 'inferred'
+   * when the end was deduced (a newer turn started, or Claude reported
+   * waiting for input, while this turn had no end event - the Esc case).
+   */
+  endEvidence: Evidence | null;
 }
 
 export interface SessionState {
@@ -161,9 +175,10 @@ export interface SessionState {
 
 /**
  * 2 = pass-2 checkpoints (no turn tracking fields); 3 = turn tracking;
- * 4 = per-agent model/task and delegation-call fields (pass 5).
+ * 4 = per-agent model/task and delegation-call fields (pass 5);
+ * 5 = agent.startObserved and turn.endEvidence (pass 7).
  */
-export const STATE_SCHEMA_VERSION = 4;
+export const STATE_SCHEMA_VERSION = 5;
 
 export interface TownState {
   schemaVersion: number;
@@ -232,7 +247,12 @@ function upgradeSession(s: SessionState): SessionState {
       if (ra.task === undefined) ra.task = null;
       if (ra.taskEvidence === undefined) ra.taskEvidence = null;
       if (ra.taskToolId === undefined) ra.taskToolId = null;
+      // v4 → v5: whether the start was observed is unknown for stored agents; keep them visible.
+      if (ra.startObserved === undefined) ra.startObserved = true;
     }
+  }
+  if (raw.currentTurn && (raw.currentTurn as Partial<TurnState>).endEvidence === undefined) {
+    (raw.currentTurn as Partial<TurnState>).endEvidence = raw.currentTurn.status === 'running' ? null : 'observed';
   }
   if (raw.toolCalls) {
     for (const tc of ownValues(raw.toolCalls)) {
@@ -289,6 +309,7 @@ function newAgent(
     task: null,
     taskEvidence: null,
     taskToolId: null,
+    startObserved: false,
   };
 }
 
@@ -324,7 +345,9 @@ function ensureSession(state: TownState, ev: AgentEvent): SessionState {
     state.sessionOrder.push(key);
     // Every session has an explicit root agent; providers that omit a root
     // agent id map it to 'main' (idOrigin 'internal-main').
-    setOwn(s.agents, MAIN_AGENT_ID, newAgent(MAIN_AGENT_ID, 'internal-main', 'main', ev.receivedAt, 0));
+    const main = newAgent(MAIN_AGENT_ID, 'internal-main', 'main', ev.receivedAt, 0);
+    main.startObserved = true;
+    setOwn(s.agents, MAIN_AGENT_ID, main);
   }
   if (!s.cwd && ev.cwd) {
     s.cwd = ev.cwd;
@@ -355,6 +378,9 @@ function ensureAgent(s: SessionState, ev: AgentEvent, role?: 'main' | 'subagent'
       a.parentAgentId = ev.parentAgentId;
       a.parentEvidence = 'provider-semantics';
     }
+    // An agent first seen through its own end (SubagentStop) or the session's
+    // end did nothing observable; anything else proves it was active.
+    a.startObserved = ev.kind !== 'agent.response_completed' && ev.kind !== 'session.ended';
     setOwn(s.agents, ev.agentId, a);
   } else {
     if (!a.agentType && ev.payload.agentType) a.agentType = ev.payload.agentType;
@@ -603,13 +629,42 @@ function completeTurn(
   s: SessionState,
   ev: AgentEvent,
   status: Exclude<TurnState['status'], 'running'>,
+  evidence: Evidence = 'observed',
 ): void {
   if (s.currentTurn && s.currentTurn.status === 'running') {
     s.currentTurn.status = status;
     s.currentTurn.endedAt = ev.receivedAt;
+    s.currentTurn.endEvidence = evidence;
     rememberTurn(s, s.currentTurn.turnId);
     if (status === 'completed') s.turnsCompleted++;
   }
+}
+
+/**
+ * The Esc case. Claude Code fires no Stop when the user interrupts a turn:
+ * the next observable facts are a new UserPromptSubmit (a different turn id
+ * while this one is still "running") or an idle_prompt notification
+ * (Claude has been waiting for input for 60 s+). Either proves the running
+ * turn ended without an end event. It is closed as `interrupted` with
+ * evidence `inferred`; every agent's running tools become `unresolved`
+ * (never completed), pending approvals resolve as inferred, and active
+ * agents go idle with lastResponse `interrupted`. Any later tool activity
+ * makes an agent active again, so nothing is lost if it was in fact still
+ * working. Returns true when a turn was closed.
+ */
+function interruptOpenTurn(s: SessionState, ev: AgentEvent): boolean {
+  if (!s.currentTurn || s.currentTurn.status !== 'running') return false;
+  completeTurn(s, ev, 'interrupted', 'inferred');
+  for (const a of ownValues(s.agents)) {
+    closeRunningTools(s, a, ev);
+    inferApprovalsOnTurnEnd(s, a, ev);
+    if (a.lifecycle === 'active') {
+      a.lifecycle = 'idle';
+      a.lastResponse = 'interrupted';
+    }
+    a.waitingForInput = false;
+  }
+  return true;
 }
 
 /**
@@ -667,12 +722,16 @@ export function applyEvent(state: TownState, ev: AgentEvent): TownState {
           break;
         }
       }
+      // A new turn while the previous one never ended = the previous one was
+      // interrupted (Esc): close it and its leftovers before starting fresh.
+      interruptOpenTurn(s, ev);
       if (s.currentTurn) rememberTurn(s, s.currentTurn.turnId);
       if (s.lifecycle !== 'ended') s.lifecycle = 'active';
-      s.currentTurn = { turnId: ev.turnId, startedAt: ev.receivedAt, status: 'running', endedAt: null };
+      s.currentTurn = { turnId: ev.turnId, startedAt: ev.receivedAt, status: 'running', endedAt: null, endEvidence: null };
       rememberTurn(s, ev.turnId);
       const a = ensureAgent(s, ev);
       a.lifecycle = 'active';
+      a.startObserved = true;
       a.lastResponse = null;
       a.lastError = null;
       a.waitingForInput = false;
@@ -698,6 +757,7 @@ export function applyEvent(state: TownState, ev: AgentEvent): TownState {
     case 'agent.started': {
       const a = ensureAgent(s, ev, ev.agentId === MAIN_AGENT_ID ? 'main' : 'subagent');
       a.lifecycle = 'active';
+      a.startObserved = true;
       a.lastResponse = null;
       if (ev.payload.agentType) a.agentType = ev.payload.agentType;
       if (s.lifecycle !== 'ended') s.lifecycle = 'active';
@@ -737,6 +797,7 @@ export function applyEvent(state: TownState, ev: AgentEvent): TownState {
         break;
       }
       a.lifecycle = 'active';
+      a.startObserved = true;
       if (s.lifecycle !== 'ended') s.lifecycle = 'active';
       setOwn(s.toolCalls, key.id, newCall(ev, key, 'running'));
       a.activeToolIds.push(key.id);
@@ -842,7 +903,15 @@ export function applyEvent(state: TownState, ev: AgentEvent): TownState {
     case 'notification': {
       const a = ensureAgent(s, ev);
       const t = ev.payload.notificationType;
-      if (t === 'idle_prompt' || t === 'agent_needs_input') a.waitingForInput = true;
+      if (t === 'idle_prompt' || t === 'agent_needs_input') {
+        // Claude has been waiting for input for 60 s+. If the root agent's
+        // turn is still "running" and nothing is awaiting a permission
+        // answer, the turn ended without a Stop (interrupted with Esc).
+        if (a.role === 'main' && s.currentTurn?.status === 'running' && a.pendingApprovalIds.length === 0) {
+          interruptOpenTurn(s, ev);
+        }
+        a.waitingForInput = true;
+      }
       break;
     }
     case 'unknown':

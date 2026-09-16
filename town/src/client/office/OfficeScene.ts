@@ -619,8 +619,8 @@ export class OfficeScene extends Phaser.Scene {
     e.nameBg.clear();
     const nw = e.nameTag.width + 8;
     const nh = e.nameTag.height + 2;
-    const provColor = Phaser.Display.Color.HexStringToColor(PROVIDER_COLOR[c.provider]).color;
-    e.nameBg.fillStyle(provColor, c.dimmed ? 0.45 : 0.9);
+    const tagColor = Phaser.Display.Color.HexStringToColor(c.tagColor || PROVIDER_COLOR[c.provider]).color;
+    e.nameBg.fillStyle(tagColor, c.dimmed ? 0.45 : 0.9);
     e.nameBg.fillRoundedRect(0, 0, nw, nh, 3);
     e.sprite.setAlpha(c.dimmed ? 0.55 : 1);
     e.bubble.setAlpha(c.dimmed && !c.selected ? 0.6 : 1);

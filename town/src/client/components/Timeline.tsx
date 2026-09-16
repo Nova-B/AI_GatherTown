@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+import { toolLabel } from '../../shared/activity.js';
 import { getOwn } from '../../shared/dict.js';
 import type { AgentEvent, AgentEventKind } from '../../shared/events.js';
 import { sessionKey } from '../../shared/events.js';
@@ -162,7 +163,7 @@ export function Timeline(): React.JSX.Element {
               <span className="tl-agent mono">{ev.agentId === 'main' ? '팀장' : ev.agentId.slice(0, 10)}</span>
               <span className="tl-kind">{KIND_LABEL[ev.kind]}</span>
               <span className="tl-detail">
-                {ev.payload.toolName ? <b>{ev.payload.toolName}</b> : null}
+                {ev.payload.toolName ? <b>{toolLabel(ev.payload.toolName)}</b> : null}
                 {ev.payload.toolTarget ? ` · ${ev.payload.toolTarget}` : ''}
                 {ev.payload.agentType ? ` · ${ev.payload.agentType}` : ''}
                 {ev.payload.reason ? ` · ${ev.payload.reason}` : ''}

@@ -2,7 +2,7 @@
  * Derives what the office scene needs from the (possibly frozen) TownState.
  * Pure data; no Phaser types here.
  */
-import { ACTIVITY_LABEL_KO } from '../shared/activity.js';
+import { ACTIVITY_LABEL_KO, toolLabel } from '../shared/activity.js';
 import { getOwn, ownValues } from '../shared/dict.js';
 import type { ActivityClass, Provider } from '../shared/events.js';
 import {
@@ -32,6 +32,8 @@ export function isAgentHidden(s: SessionState, a: AgentState, _now: number): boo
   if (s.lifecycle === 'ended' || a.lifecycle === 'ended') return true;
   if (a.role !== 'subagent') return false;
   if (a.lifecycle === 'active' || a.pendingApprovalIds.length > 0 || a.waitingForInput) return false;
+  // Known only from its SubagentStop: nothing to show at a desk.
+  if (!a.startObserved) return true;
   const turn = s.currentTurn;
   if (!turn) return false;
   const turnStart = Date.parse(turn.startedAt);
@@ -61,6 +63,10 @@ export interface CharacterVM {
   status: AgentDisplayStatus;
   activity: ActivityClass | null;
   label: string;
+  /** Name-tag colour: provider colour for the lead, agent-type colour for helpers. */
+  tagColor: string;
+  /** Tool calls running at once for this agent (0 when idle). */
+  parallel: number;
   bubble: { title: string; detail: string | null; extra: number } | null;
   selected: boolean;
   dimmed: boolean;
@@ -93,9 +99,58 @@ export function characterKey(provider: Provider, sessionId: string, agentId: str
   return JSON.stringify([provider, sessionId, agentId]);
 }
 
+/** Korean role per subagent type (lower-cased provider `agent_type`). */
+export const AGENT_TYPE_LABEL_KO: Record<string, string> = {
+  explore: '탐색',
+  plan: '설계',
+  'general-purpose': '실무',
+  claude: '실무',
+  'claude-code-guide': '안내',
+  worker: '작업',
+  reviewer: '검토',
+};
+
+export const PROVIDER_COLOR: Record<Provider, string> = { claude: '#c2410c', codex: '#0e7490' };
+
+const AGENT_TYPE_COLOR: Record<string, string> = {
+  explore: '#0f766e',
+  plan: '#6d28d9',
+  'general-purpose': '#475569',
+  claude: '#475569',
+  worker: '#475569',
+  reviewer: '#b45309',
+  'claude-code-guide': '#b45309',
+};
+const AGENT_TYPE_COLOR_FALLBACK = '#1d4ed8';
+const AGENT_UNKNOWN_COLOR = '#64748b';
+
+/**
+ * Helpers are named by what they were asked to be, not lumped as "직원":
+ * "탐색 담당 · Explore", "설계 담당 · Plan", "실무 담당 · general-purpose",
+ * a custom type as "{type} 담당". An agent whose start was never observed
+ * (SubagentStop only) is labelled so and is not drawn in the office.
+ */
 export function roleLabel(a: AgentState): string {
   if (a.role === 'main') return '팀장';
-  return a.agentType ? `직원 · ${a.agentType}` : '직원';
+  if (!a.agentType) return a.startObserved ? '보조 에이전트' : '보조 에이전트 · 시작 미관측';
+  const ko = AGENT_TYPE_LABEL_KO[a.agentType.toLowerCase()];
+  return ko ? `${ko} 담당 · ${a.agentType}` : `${a.agentType} 담당`;
+}
+
+export function agentTagColor(s: SessionState, a: AgentState): string {
+  if (a.role === 'main') return PROVIDER_COLOR[s.provider];
+  if (!a.agentType) return AGENT_UNKNOWN_COLOR;
+  return AGENT_TYPE_COLOR[a.agentType.toLowerCase()] ?? AGENT_TYPE_COLOR_FALLBACK;
+}
+
+/** Stable sprite per helper type so every Explore looks alike; the lead keeps the room's sprite. */
+function helperSprite(a: AgentState, podIndex: number): number {
+  const key = (a.agentType ?? a.id).toLowerCase();
+  let h = 7;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  const lead = podIndex % 6;
+  const pick = 1 + (h % 5); // 1..5
+  return (lead + pick) % 6; // never the lead's own sprite
 }
 
 /** sessionKey -> room index. Persisted by the view between frames (per view mode). */
@@ -224,17 +279,19 @@ export function buildOfficeVM(
       const last = a.lastToolId ? getOwn(s.toolCalls, a.lastToolId) : undefined;
       let bubble: CharacterVM['bubble'] = null;
       if (current) {
-        bubble = { title: current.toolName, detail: current.target, extra: running.length - 1 };
+        // Several calls at once are the same agent working in parallel, not extra people.
+        const title = running.length > 1 ? `${toolLabel(current.toolName)} · 병렬 ${running.length}` : toolLabel(current.toolName);
+        bubble = { title, detail: current.target, extra: 0 };
       } else if (status === 'awaiting_approval') {
         const apId = a.pendingApprovalIds[0];
         const ap = apId ? getOwn(s.approvals, apId) : undefined;
         bubble = {
           title: '승인 대기',
-          detail: ap?.toolName ? `${ap.toolName}${ap.target ? ' · ' + ap.target : ''}` : '도구 미확인',
+          detail: ap?.toolName ? `${toolLabel(ap.toolName)}${ap.target ? ' · ' + ap.target : ''}` : '도구 미확인',
           extra: 0,
         };
       } else if (status === 'failed' && last && (last.status === 'failed' || last.status === 'denied')) {
-        bubble = { title: `${last.toolName} 실패`, detail: last.error ?? last.target, extra: 0 };
+        bubble = { title: `${toolLabel(last.toolName)} 실패`, detail: last.error ?? last.target, extra: 0 };
       } else if (status === 'failed') {
         bubble = { title: a.lastError ?? '실패', detail: null, extra: 0 };
       } else if (status === 'waiting_input') {
@@ -259,10 +316,12 @@ export function buildOfficeVM(
         role: a.role,
         podIndex,
         seatIndex: a.role === 'main' ? -1 : seat++,
-        characterIndex: a.role === 'main' ? podIndex % 6 : (podIndex + a.characterIndex + 2) % 6,
+        characterIndex: a.role === 'main' ? podIndex % 6 : helperSprite(a, podIndex),
         status,
         activity,
-        label: a.role === 'main' ? `${PROVIDER_LABEL[s.provider]} 팀장` : roleLabel(a),
+        label: `${a.role === 'main' ? `${PROVIDER_LABEL[s.provider]} 팀장` : roleLabel(a)}${running.length > 1 ? ` ⇉${running.length}` : ''}`,
+        tagColor: agentTagColor(s, a),
+        parallel: running.length,
         bubble,
         selected,
         dimmed,

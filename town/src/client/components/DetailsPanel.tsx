@@ -1,7 +1,7 @@
 import { Crosshair } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
-import { ACTIVITY_LABEL_KO } from '../../shared/activity.js';
+import { ACTIVITY_LABEL_KO, toolDescription, toolLabel } from '../../shared/activity.js';
 import { getOwn, ownValues } from '../../shared/dict.js';
 import {
   AGENT_STATUS_LABEL_KO,
@@ -76,7 +76,7 @@ function SessionDetails({ session, now }: { session: SessionState; now: number }
         <dt>현재 턴</dt>
         <dd>
           {session.currentTurn
-            ? `${session.currentTurn.status === 'running' ? '진행 중' : session.currentTurn.status === 'completed' ? '완료' : session.currentTurn.status === 'failed' ? '실패' : '중단'} · ${elapsed(session.currentTurn.startedAt, session.currentTurn.endedAt, now)}`
+            ? `${session.currentTurn.status === 'running' ? '진행 중' : session.currentTurn.status === 'completed' ? '완료' : session.currentTurn.status === 'failed' ? '실패' : '중단'}${session.currentTurn.endEvidence === 'inferred' ? ' (종료 이벤트 없음 · 추정)' : ''} · ${elapsed(session.currentTurn.startedAt, session.currentTurn.endedAt, now)}`
             : '없음'}
         </dd>
         <dt>마지막 이벤트</dt>
@@ -98,7 +98,8 @@ function SessionDetails({ session, now }: { session: SessionState; now: number }
                 <span className={`dot dot-${st}`} />
                 <span className="agent-name">{roleLabel(a)}</span>
                 <span className="muted">{AGENT_STATUS_LABEL_KO[st]}</span>
-                {a.activeToolIds.length > 0 && <span className="muted">도구 {a.activeToolIds.length}</span>}
+                {a.activeToolIds.length > 1 && <span className="muted">병렬 {a.activeToolIds.length}</span>}
+                {a.activeToolIds.length === 1 && <span className="muted">도구 1</span>}
                 {model.model && (
                   <span className="muted mono small" title={model.source === 'session' ? '세션 모델 (위임 호출에 별도 지정 없음)' : '위임 호출이 지정한 모델'}>
                     {model.model}
@@ -156,6 +157,11 @@ function AgentDetails({ session, agentId, now }: { session: SessionState; agentI
         <dd className="mono">
           {a.id}
           {a.idOrigin === 'internal-main' ? ' (내부 지정)' : ''}
+          {!a.startObserved && (
+            <span className="warn-tag" title="SubagentStart나 도구 호출 없이 SubagentStop만 수신된 에이전트입니다. 사무실에는 그리지 않습니다.">
+              시작 미관측
+            </span>
+          )}
         </dd>
         {a.agentType && (
           <>
@@ -187,7 +193,7 @@ function AgentDetails({ session, agentId, now }: { session: SessionState; agentI
           {workLabel ?? <span className="muted">관측된 도구 호출 없음</span>}
           {work.lastCall && (
             <span className="muted">
-              {' '}· 마지막: {work.lastCall.toolName}
+              {' '}· 마지막: {toolLabel(work.lastCall.toolName)}
               {work.lastCall.target ? ` · ${work.lastCall.target}` : ''}
             </span>
           )}
@@ -213,12 +219,14 @@ function AgentDetails({ session, agentId, now }: { session: SessionState; agentI
         )}
       </dl>
 
-      <h3>진행 중 도구 ({running.length})</h3>
+      <h3>
+        진행 중 도구 ({running.length}){running.length > 1 ? ' · 병렬 실행' : ''}
+      </h3>
       {running.length === 0 && <p className="muted small">없음</p>}
       <ul className="tool-list" data-testid="running-tools">
         {running.map((t) => (
           <li key={t.id} className="tool-item running">
-            <span className="tool-name">{t.toolName}</span>
+            <span className="tool-name" title={toolDescription(t.toolName) ?? ''}>{toolLabel(t.toolName)}</span>
             <span className="tool-target" title={t.target ?? ''}>{t.target ?? ''}</span>
             <span className="muted">
               {ACTIVITY_LABEL_KO[t.activity]} · {elapsed(t.startedAt, null, now)}
@@ -236,7 +244,7 @@ function AgentDetails({ session, agentId, now }: { session: SessionState; agentI
               .filter((ap) => ap.status === 'pending')
               .map((ap) => (
                 <li key={ap.id} className="tool-item approval">
-                  <span className="tool-name">{ap.toolName ?? '도구 미확인'}</span>
+                  <span className="tool-name">{ap.toolName ? toolLabel(ap.toolName) : '도구 미확인'}</span>
                   <span className="tool-target">{ap.target ?? ''}</span>
                   <span className="muted">{relTime(ap.requestedAt, now)} · 원래 CLI에서 처리</span>
                   {!ap.idKnown && <span className="warn-tag">도구 연결 불가</span>}
@@ -251,7 +259,7 @@ function AgentDetails({ session, agentId, now }: { session: SessionState; agentI
       <ul className="tool-list" data-testid="recent-tools">
         {recent.map((t) => (
           <li key={t.id} className={`tool-item ${t.status}`}>
-            <span className="tool-name">{t.toolName}</span>
+            <span className="tool-name" title={toolDescription(t.toolName) ?? ''}>{toolLabel(t.toolName)}</span>
             <span className="tool-target" title={t.sourceId ?? ''}>{t.target ?? ''}</span>
             <span className={`tool-status tool-status-${t.status}`}>
               {TOOL_STATUS_LABEL_KO[t.status]}
@@ -273,7 +281,7 @@ function AgentDetails({ session, agentId, now }: { session: SessionState; agentI
               .slice(0, 5)
               .map((ap) => (
                 <li key={ap.id} className="tool-item">
-                  <span className="tool-name">{ap.toolName ?? '도구 미확인'}</span>
+                  <span className="tool-name">{ap.toolName ? toolLabel(ap.toolName) : '도구 미확인'}</span>
                   <span className="muted">
                     {ap.decision === 'allowed' ? '진행됨' : ap.decision === 'denied' ? '거부됨' : '결과 미확인'}
                     {ap.resolutionEvidence === 'inferred' ? ' (턴 종료로 추정)' : ''}

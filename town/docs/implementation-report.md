@@ -1,8 +1,40 @@
-# Implementation report - Agent Town (pass 6: approval prompt fix, completion chime, departure timing)
+# Implementation report - Agent Town (pass 7: Esc, model switch check, helper labels, tool explanations)
 
-Date: 2026-09-13 (passes 1-4), 2026-09-14 (pass 5), 2026-09-15 (pass 6). Environment: Windows 11 Pro 10.0.26200, Node v22.17.x, npm 10.9.2. Repository: pixel-agents at `3537e140c2094761beae748592aeb92ece8edfdd` (untouched) plus the new `town/` application, `AGENT_TOWN.md` and `Start-AgentTown.cmd`.
+Date: 2026-09-13 (passes 1-4), 2026-09-14 (pass 5), 2026-09-15 (pass 6), 2026-09-16 (pass 7). Environment: Windows 11 Pro 10.0.26200, Node v22.17.x, npm 10.9.2. Repository: pixel-agents at `3537e140c2094761beae748592aeb92ece8edfdd` (untouched) plus the new `town/` application, `AGENT_TOWN.md` and `Start-AgentTown.cmd`.
 
-This report covers the first vertical slice, the pass-2 supervisor corrections, the pass-3 late-event corrections, the pass-4 checkpoint compatibility fix, the pass-5 user-requested UI changes and the pass-6 fixes. The retrospect button lives on branch `feature/retrospect-button` (its own report section is on that branch). It is **not** the whole six-week plan: no Agent Teams/teammates, no transcript reading, no usage display, no multi-room walking, no WSL/remote hosts.
+This report covers the first vertical slice, the pass-2 supervisor corrections, the pass-3 late-event corrections, the pass-4 checkpoint compatibility fix, the pass-5 user-requested UI changes, the pass-6 fixes and the pass-7 changes. The retrospect button lives on branch `feature/retrospect-button` (its own report section is on that branch). It is **not** the whole six-week plan: no Agent Teams/teammates, no transcript reading, no usage display, no multi-room walking, no WSL/remote hosts.
+
+## Pass 7: Esc, model switch, helper labels, tool explanations (user feedback 2026-09-16)
+
+**First real recordings.** Hooks were installed into the user's own project on 2026-09-15; `~/.agent-town/events.sqlite` held 72 Claude Code events from 3 sessions (13 hook types incl. `PostModelSwitch`). Read-only inspection established, before any change:
+
+- Esc fires **no** `Stop`: seq 13 `PreToolUse Grep` is followed directly by seq 14 `UserPromptSubmit` with a new `prompt_id`; the Grep never completes. A message sent mid-turn re-fires `UserPromptSubmit` with the **same** `prompt_id` (seq 53 → 60).
+- `/model` works end to end: seq 9 `PostModelSwitch` `claude-fable-5-1 → claude-opus-5[1m]` was ingested and the session model follows it. A `SessionStart` after `/clear` carries no `model`, the switch right after does; a `SessionStart` on `resume` carries the model. No code change was needed for the model itself.
+- `SubagentStop` arrived 8 times for **1** `SubagentStart` (ids that never started and never used a tool): with the old rule each became a "직원 · 완료" character out of nowhere.
+- A new tool name `SubagentHandback` appears inside a subagent; helpers run tools in parallel (two Greps at once).
+
+| # | Request | Change | Where |
+|---|---|---|---|
+| 1 | Esc leaves the state wrong | `interruptOpenTurn`: a running turn is closed as `interrupted` with `endEvidence: 'inferred'` when a `turn.started` with a different id arrives, or an `idle_prompt`/`agent_needs_input` reaches the root agent with no pending approval. Running tools → `unresolved` (`endedByTurn`), approvals inferred, active agents idle/`interrupted` (re-activated by any later tool activity). Same-id re-delivery stays a duplicate. Details show "(종료 이벤트 없음 · 추정)" | `state.ts`, `DetailsPanel.tsx` |
+| 2 | Is `/model` reflected? | Verified from recordings (above); tests already cover SessionStart + PostModelSwitch. No change | - |
+| 3 | Do not lump helpers as "직원"; parallel work is not people | Helpers labelled by requested type ("탐색 담당 · Explore", "설계 담당 · Plan", "실무 담당 · general-purpose", "{type} 담당") with a per-type name-tag colour and a sprite that is never the lead's. A tool call never creates a character; parallel calls of one agent read "Read(읽기) · 병렬 3" in the bubble, "⇉3" on the tag, "병렬 N" in the agent row and "병렬 실행" in details. Stop-only agents get `startObserved: false`, are listed with "시작 미관측" and are not drawn | `viewModel.ts` (`roleLabel`, `agentTagColor`, `helperSprite`, `isAgentHidden`), `OfficeScene.ts`, `state.ts`, `DetailsPanel.tsx` |
+| 4 | Tool names are not self-explanatory | `activity.toolLabel` → "Read(읽기)", "Grep(내용 검색)", "Bash(명령 실행)", "Skill(스킬 실행)", "apply_patch(패치 적용)", "SubagentHandback(결과 넘김)", MCP as "search(MCP server)"; unknown names stay bare. Used in bubbles, details (with a tooltip) and the timeline. `SubagentHandback`/`SendMessage`/`ListAgents` classified as `agent` | `activity.ts`, `viewModel.ts`, `DetailsPanel.tsx`, `Timeline.tsx` |
+| 5 | Schema 4 → 5 | `startObserved` (default true for stored agents), `TurnState.endEvidence` (null while running, `observed` otherwise) | `state.ts` |
+
+Tests: `test/interrupt.test.ts` (11 cases: new prompt closes the open turn and unresolves its tools with a late outcome still refining; same-id re-delivery is a duplicate; helpers active at Esc go idle and leave, tool activity brings one back; idle_prompt ends the turn only without a pending approval; Stop stays observed; stop-only agent hidden until it uses a tool; tool labels incl. MCP/unknown/null; role labels for Explore/Plan/general-purpose/custom/untyped, no "직원", distinct colours and sprites; parallel bubble/label/extra; schema 4 → 5 idempotent). Smoke updated for the new bubble text and the Explore row label.
+
+Commands run (pass 7):
+
+```
+cd town
+node inspect-db.mjs (read-only, scratch)   # 72 events, 3 sessions - findings above
+npm run typecheck                          # no errors
+npx vitest run                             # Test Files 14 passed, Tests 148 passed
+npm run build                              # dist/client js ~1,514 kB (gzip ~417 kB)
+node scripts/browser-smoke.mjs             # 37/37 checks passed (msedge channel)
+```
+
+Not verified live: the office after an actual Esc (the recordings show the events; the unit tests replay them), and whether the stop-only SubagentStops are internal helper processes or missed SubagentStarts - either way they no longer produce characters.
 
 ## Pass 6: stale "승인 대기", completion chime, employee departure timing (user feedback 2026-09-15)
 
