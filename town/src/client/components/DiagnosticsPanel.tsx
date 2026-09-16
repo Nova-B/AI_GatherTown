@@ -33,6 +33,12 @@ export function DiagnosticsPanel(): React.JSX.Element {
                 <dd>순번 {d.historyFromSeq} 이하 · 세션 {d.prunedSessions}개</dd>
               </>
             )}
+            <dt>Esc 감지</dt>
+            <dd title="Claude 트랜스크립트에 남는 사용자 중단 표시를 1초 간격으로 확인합니다. 본문은 읽지 않습니다.">
+              {d?.transcript
+                ? `켜짐 · 감시 ${d.transcript.watching}개 세션 · 감지 ${d.transcript.markers}회${d.transcript.lastMarkerAt ? ` · 마지막 ${relTime(d.transcript.lastMarkerAt)}` : ''}${d.transcript.lastError ? ` · 오류 ${d.transcript.lastError}` : ''}`
+                : '꺼짐 (다음 프롬프트에서만 반영)'}
+            </dd>
           </dl>
           {d &&
             (['claude', 'codex'] as const).map((p) => {

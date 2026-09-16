@@ -25,6 +25,10 @@ export interface ServerConfig {
   retention: RetentionInfo;
   /** Extra browser origins allowed for WS/API (dev proxy). */
   extraOrigins: string[];
+  /** Follow Claude transcripts for the Esc marker (AGENT_TOWN_TRANSCRIPT_WATCH=0 disables). */
+  transcriptWatch: boolean;
+  /** Where Claude Code keeps session transcripts (default ~/.claude/projects). */
+  claudeProjectsDir: string;
 }
 
 function intEnv(name: string, fallback: number): number {
@@ -72,7 +76,11 @@ export function loadConfig(overrides: Partial<ServerConfig> = {}): ServerConfig 
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+  const homeDir = overrides.homeDir ?? os.homedir();
   return {
+    transcriptWatch: overrides.transcriptWatch ?? process.env.AGENT_TOWN_TRANSCRIPT_WATCH !== '0',
+    claudeProjectsDir:
+      overrides.claudeProjectsDir ?? process.env.AGENT_TOWN_CLAUDE_PROJECTS ?? path.join(homeDir, '.claude', 'projects'),
     host: overrides.host ?? process.env.AGENT_TOWN_HOST ?? '127.0.0.1',
     port: Number.isFinite(port) && port >= 0 ? port : DEFAULT_PORT,
     portExplicit: overrides.portExplicit ?? !!portEnv,
@@ -81,7 +89,7 @@ export function loadConfig(overrides: Partial<ServerConfig> = {}): ServerConfig 
     serverJsonPath: path.join(dataDir, 'server.json'),
     ingestTokenPath,
     ingestToken,
-    homeDir: overrides.homeDir ?? os.homedir(),
+    homeDir,
     clientDir,
     devMode: overrides.devMode ?? process.env.AGENT_TOWN_DEV === '1',
     retention: overrides.retention ?? {

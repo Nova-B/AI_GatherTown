@@ -44,6 +44,14 @@ export interface Diagnostics {
   ingestTokenFile: string;
   providers: Record<Provider, ProviderDiagnostics>;
   spool: { available: boolean };
+  /** Claude transcript Esc detection (absent when disabled). */
+  transcript?: {
+    enabled: boolean;
+    watching: number;
+    markers: number;
+    lastMarkerAt: string | null;
+    lastError: string | null;
+  };
 }
 
 export interface BootstrapResponse {

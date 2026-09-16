@@ -321,7 +321,7 @@ function ensureSession(state: TownState, ev: AgentEvent): SessionState {
       key,
       provider: ev.provider,
       sessionId: ev.sessionId,
-      source: ev.source,
+      source: ev.source === 'demo' ? 'demo' : 'hook',
       cwd: ev.cwd,
       projectName: projectNameFromCwd(ev.cwd),
       model: ev.payload.model ?? null,
@@ -655,6 +655,12 @@ function completeTurn(
 function interruptOpenTurn(s: SessionState, ev: AgentEvent): boolean {
   if (!s.currentTurn || s.currentTurn.status !== 'running') return false;
   completeTurn(s, ev, 'interrupted', 'inferred');
+  interruptAgents(s, ev);
+  return true;
+}
+
+/** An interruption stops every agent of the session, not only the root. */
+function interruptAgents(s: SessionState, ev: AgentEvent): void {
   for (const a of ownValues(s.agents)) {
     closeRunningTools(s, a, ev);
     inferApprovalsOnTurnEnd(s, a, ev);
@@ -664,7 +670,6 @@ function interruptOpenTurn(s: SessionState, ev: AgentEvent): boolean {
     }
     a.waitingForInput = false;
   }
-  return true;
 }
 
 /**
@@ -752,6 +757,9 @@ export function applyEvent(state: TownState, ev: AgentEvent): TownState {
       a.lastError = ev.payload.error ?? (interrupted ? '사용자 중단' : '턴 실패');
       closeRunningTools(s, a, ev);
       inferApprovalsOnTurnEnd(s, a, ev);
+      // An observed interruption (Codex Interrupt, Claude transcript marker)
+      // stops the helpers too; their later activity reactivates them.
+      if (interrupted) interruptAgents(s, ev);
       break;
     }
     case 'agent.started': {

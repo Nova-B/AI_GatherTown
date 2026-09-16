@@ -17,7 +17,8 @@
 
 export type Provider = 'claude' | 'codex';
 
-export type EventSource = 'hook' | 'demo';
+/** 'transcript' = synthesized by the server from a transcript marker (Claude Esc detection). */
+export type EventSource = 'hook' | 'demo' | 'transcript';
 
 export type AgentEventKind =
   | 'session.started'

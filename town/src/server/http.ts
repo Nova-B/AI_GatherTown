@@ -35,6 +35,7 @@ import { APP_VERSION, type ServerConfig } from './config.js';
 import { ingestEnvelope, parseEnvelopes } from './ingest.js';
 import { reconstructState, type RetentionResult, runRetention, stateBefore } from './retention.js';
 import type { EventStore } from './store.js';
+import { TranscriptWatcher } from './transcript.js';
 
 export { reconstructState } from './retention.js';
 
@@ -63,6 +64,10 @@ export interface TownServer {
   diagnostics(): Diagnostics;
   /** Run retention against the store and live state, then resync clients. */
   applyRetention(now?: Date): RetentionResult;
+  /** Store and broadcast a server-synthesized event (transcript marker); null when a duplicate. */
+  ingestSynthetic(ev: AgentEvent): AgentEvent | null;
+  /** The transcript watcher when enabled (tests drive `tick()` directly). */
+  transcriptWatcher: TranscriptWatcher | null;
   close(): Promise<void>;
 }
 
@@ -244,6 +249,7 @@ export async function startServer(cfg: ServerConfig, store: EventStore): Promise
     ingestTokenFile: cfg.ingestTokenPath,
     providers: providerDiag,
     spool: { available: true },
+    ...(transcriptWatcher ? { transcript: { ...transcriptWatcher.stats } } : {}),
   });
 
   const send = (s: AuthedSocket, msg: ServerMessage): void => {
@@ -277,6 +283,25 @@ export async function startServer(cfg: ServerConfig, store: EventStore): Promise
     d.lastHookEventName = ev.hookEventName;
     broadcast({ type: 'event', event: ev });
   };
+
+  const ingestSynthetic = (ev: AgentEvent): AgentEvent | null => {
+    const stored = store.insert(ev);
+    if (!stored) return null;
+    onStored(stored);
+    broadcast({ type: 'diagnostics', diagnostics: diagnostics() });
+    return stored;
+  };
+
+  const transcriptWatcher: TranscriptWatcher | null = cfg.transcriptWatch
+    ? new TranscriptWatcher({
+        projectsDir: cfg.claudeProjectsDir,
+        homeDir: cfg.homeDir,
+        state,
+        emit: (ev) => {
+          ingestSynthetic(ev);
+        },
+      })
+    : null;
 
   const applyRetention = (now = new Date()): RetentionResult => {
     const result = runRetention(store, state, cfg.retention, now);
@@ -589,14 +614,19 @@ export async function startServer(cfg: ServerConfig, store: EventStore): Promise
     }
   }, 25_000);
 
+  transcriptWatcher?.start();
+
   return {
     server,
     port: listeningPort,
     state,
     diagnostics,
     applyRetention,
+    ingestSynthetic,
+    transcriptWatcher,
     close: () =>
       new Promise<void>((resolve) => {
+        transcriptWatcher?.stop();
         clearInterval(heartbeat);
         for (const s of sockets) s.ws.close(1001, 'server shutdown');
         wss.close();

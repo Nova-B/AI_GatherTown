@@ -1,8 +1,33 @@
-# Implementation report - Agent Town (pass 7: Esc, model switch check, helper labels, tool explanations)
+# Implementation report - Agent Town (pass 8: Esc detection from the transcript marker)
 
-Date: 2026-09-13 (passes 1-4), 2026-09-14 (pass 5), 2026-09-15 (pass 6), 2026-09-16 (pass 7). Environment: Windows 11 Pro 10.0.26200, Node v22.17.x, npm 10.9.2. Repository: pixel-agents at `3537e140c2094761beae748592aeb92ece8edfdd` (untouched) plus the new `town/` application, `AGENT_TOWN.md` and `Start-AgentTown.cmd`.
+Date: 2026-09-13 (passes 1-4), 2026-09-14 (pass 5), 2026-09-15 (pass 6), 2026-09-16 (passes 7-8). Environment: Windows 11 Pro 10.0.26200, Node v22.17.x, npm 10.9.2. Repository: pixel-agents at `3537e140c2094761beae748592aeb92ece8edfdd` (untouched) plus the new `town/` application, `AGENT_TOWN.md` and `Start-AgentTown.cmd`.
 
-This report covers the first vertical slice, the pass-2 supervisor corrections, the pass-3 late-event corrections, the pass-4 checkpoint compatibility fix, the pass-5 user-requested UI changes, the pass-6 fixes and the pass-7 changes. The retrospect button lives on branch `feature/retrospect-button` (its own report section is on that branch). It is **not** the whole six-week plan: no Agent Teams/teammates, no transcript reading, no usage display, no multi-room walking, no WSL/remote hosts.
+This report covers the first vertical slice, the pass-2 supervisor corrections, the pass-3 late-event corrections, the pass-4 checkpoint compatibility fix, the pass-5 user-requested UI changes, the pass-6 fixes, the pass-7 changes and the pass-8 Esc detector. The retrospect button lives on branch `feature/retrospect-button` (its own report section is on that branch). It is **not** the whole six-week plan: no Agent Teams/teammates, no usage display, no multi-room walking, no WSL/remote hosts. Transcript reading now exists for exactly one purpose (the Esc marker) and nothing else.
+
+## Pass 8: Esc detected from the transcript marker (user report 2026-09-16, "60초 후에도 '작업중'")
+
+The pass-7 assumption that `idle_prompt` follows an Esc was wrong. A read-only look at the user's live session (`33862372…`) showed `PreToolUse Bash` at 13:32:37 UTC, Esc, and then **no hook event of any kind for 6 minutes** - no Stop, no idle_prompt. The session transcript, however, gained a line at 13:32:40: `{"type":"user", … "[Request interrupted by user for tool use]" …}`.
+
+| Part | Change | Where |
+|---|---|---|
+| Watcher | `TranscriptWatcher`: for recent Claude sessions (≤32, active within 24 h) derives `<projects>/<cwd with non-alphanumerics → '-'>/<session>.jsonl` from the masked cwd (`~` expanded) and the session id, polls file size every second, reads only bytes appended after first sight (history never replayed, 1 MB per tick cap, partial lines buffered as bytes), parses JSONL lines and, when a `type: "user"` line carries `[Request interrupted by user` while the session's turn is running, emits one synthesized `turn.failed` (`reason: interrupted`, `source: 'transcript'`, `evidence: 'observed'`, `turnId` = the running turn) per turn; a marker older than the turn start (5 s skew) is ignored | `src/server/transcript.ts` |
+| Server wiring | `TownServer.ingestSynthetic` stores + applies + broadcasts like an ingested event; the watcher is created in `startServer` when `cfg.transcriptWatch` (env `AGENT_TOWN_TRANSCRIPT_WATCH` ≠ `0`), started after listen, stopped on close; diagnostics carry `transcript: {enabled, watching, markers, lastMarkerAt, lastError}` | `src/server/http.ts`, `src/server/config.ts` (`claudeProjectsDir`, env `AGENT_TOWN_CLAUDE_PROJECTS`), `src/shared/protocol.ts` |
+| Reducer | An observed interruption (`turn.failed` interrupted - Codex Interrupt or the marker) now stops every agent of the session, as the inferred path already did (`interruptAgents`) | `src/shared/state.ts` |
+| Client | `EventSource` gains `'transcript'`; the chime fires for it; the timeline tags such rows "트랜스크립트 기록"; diagnostics show "Esc 감지 · 켜짐/꺼짐" | `events.ts`, `store.ts`, `Timeline.tsx`, `DiagnosticsPanel.tsx` |
+
+Tests: `test/transcript.test.ts` (6): path encoding matches Claude Code's project directory naming and rejects unsafe ids; marker parsing (user lines only, timestamp kept, assistant text and garbage ignored); watcher emits one observed interruption for the running turn, never replays history, applying it closes the turn and its tools; markers before the turn start or with no running turn are ignored and a later turn can be interrupted again; a line split across reads and a missing transcript are handled; server integration stores the synthesized row once, applies it to the live state and reports it in diagnostics.
+
+Commands run (pass 8):
+
+```
+cd town
+npm run typecheck                # no errors
+npx vitest run                   # Test Files 16 passed, Tests 156 passed
+npm run build                    # dist/client js ~1,514 kB
+node scripts/browser-smoke.mjs   # 37/37 checks passed (msedge channel)
+```
+
+Live verification still pending: the running server (started 22:31 KST from the pass-7 build) must be restarted to load the watcher; the first real Esc after that is the acceptance test. Known limit: the transcript format is not a stable contract - if the marker text or line shape changes, detection stops silently and the pass-7 inference (next prompt) remains the fallback.
 
 ## Pass 7: Esc, model switch, helper labels, tool explanations (user feedback 2026-09-16)
 

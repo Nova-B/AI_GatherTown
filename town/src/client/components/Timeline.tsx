@@ -172,6 +172,7 @@ export function Timeline(): React.JSX.Element {
                 {ev.payload.exitCode !== undefined ? ` · exit ${ev.payload.exitCode}` : ''}
                 {ev.toolCallId === null && (ev.kind.startsWith('tool.') || ev.kind.startsWith('approval.')) ? ' · ID 없음' : ''}
                 {ev.evidence === 'inferred' ? ' · 추정' : ''}
+                {ev.source === 'transcript' ? ' · 트랜스크립트 기록' : ''}
               </span>
             </div>
           );

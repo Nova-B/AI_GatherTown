@@ -154,7 +154,7 @@ class TownStore {
     applyEvent(this.state.live, ev);
     const after = getOwn(this.state.live.sessions, key)?.currentTurn;
     // A running turn that is now ended (and was not replaced by a newer turn) = the session finished its work.
-    if (wasRunning && after && after.startedAt === beforeStart && after.status !== 'running' && ev.source === 'hook') {
+    if (wasRunning && after && after.startedAt === beforeStart && after.status !== 'running' && ev.source !== 'demo') {
       for (const l of this.turnEndListeners) l({ sessionKey: key, status: after.status });
     }
     this.state.liveEvents.push(ev);

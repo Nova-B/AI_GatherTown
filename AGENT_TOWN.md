@@ -25,6 +25,8 @@ Then open `http://127.0.0.1:4317/`.
 
 With no hooks installed you will see the empty office. Click **DEMO** to play a bundled fixture (clearly badged, never persisted) to see what a live session looks like.
 
+**Esc detection**: Claude Code sends no hook when you interrupt with Esc, so the server follows the session transcript (`~/.claude/projects/...jsonl`, appended bytes only, looking only for the "[Request interrupted by user…]" marker) and marks the turn interrupted within a second or two. Set `AGENT_TOWN_TRANSCRIPT_WATCH=0` to turn this off; the turn is then closed when you send the next prompt.
+
 **완료 알림음** (toolbar, on by default) plays a short chime when a live session finishes a turn, a lower note when the turn failed or was interrupted. Browsers need one click on the page before audio can play.
 
 ## Connect your CLIs (per project)
