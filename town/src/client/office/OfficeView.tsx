@@ -11,6 +11,7 @@ const TICK_MS = 1000;
 
 export function OfficeView(): React.JSX.Element {
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const overlayHostRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef<OfficeScene | null>(null);
   const gameRef = useRef<Phaser.Game | null>(null);
   const s = useStore();
@@ -45,12 +46,14 @@ export function OfficeView(): React.JSX.Element {
 
   useEffect(() => {
     const host = hostRef.current;
-    if (!host) return;
+    const overlayHost = overlayHostRef.current;
+    if (!host || !overlayHost) return;
     const scene = new OfficeScene({
       onSelect: (sessionKey, agentId) => store.select(sessionKey, agentId),
       onReady: () => {
         host.dataset.ready = '1';
       },
+      overlayHost,
     });
     sceneRef.current = scene;
     const game = new Phaser.Game({
@@ -111,6 +114,8 @@ export function OfficeView(): React.JSX.Element {
   return (
     <div className="office" data-testid="office">
       <div ref={hostRef} className="office-canvas" data-testid="office-canvas" />
+      {/* Labels are DOM, not canvas, so they render at the device's own resolution. */}
+      <div ref={overlayHostRef} className="office-overlay-host" data-testid="office-overlay" />
       {s.mode === 'demo' && (
         <div className="office-badge office-badge-demo" data-testid="demo-badge">
           DEMO · 가상 데이터 재생 중

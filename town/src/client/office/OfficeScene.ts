@@ -2,10 +2,12 @@
  * Phaser scene for the fixed office. Receives a view model (see viewModel.ts)
  * and reconciles characters; camera fit/pan/zoom; selection.
  *
- * Two cameras: the world camera (zoom/pan) renders map and characters; a
- * second, never-zoomed UI camera renders the screen-space layer (bubbles,
- * name tags, room labels). Each camera ignores the other's objects, so UI
- * text is positioned in screen pixels exactly once.
+ * The canvas draws only the world (map, furniture, characters) through the
+ * single world camera. Every label - bubbles, name tags, room labels - lives
+ * in a DOM overlay (see OfficeOverlay.ts) so it is rendered at the device's
+ * own resolution instead of through the pixel-art canvas. The scene still
+ * computes their screen-space positions here, exactly as it did for the UI
+ * camera, and hands them to the overlay.
  */
 import Phaser from 'phaser';
 
@@ -20,6 +22,7 @@ import {
   FLOOR_COUNT,
   FURNITURE_FILES,
 } from './assets.js';
+import { OfficeOverlay } from './OfficeOverlay.js';
 import {
   buildLayout,
   type OfficeLayout,
@@ -55,8 +58,6 @@ const PROVIDER_COLOR: Record<'claude' | 'codex', string> = {
   codex: '#0e7490',
 };
 
-const UI_FONT = "'Segoe UI', 'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif";
-
 interface CharEntity {
   key: string;
   vm: CharacterVM;
@@ -70,22 +71,20 @@ interface CharEntity {
   dir: Dir;
   lastRetargetAt: number;
   spawnedAt: number;
-  bubble: Phaser.GameObjects.Container;
-  bubbleBg: Phaser.GameObjects.Graphics;
-  bubbleTitle: Phaser.GameObjects.Text;
-  bubbleDetail: Phaser.GameObjects.Text;
   bubbleW: number;
   bubbleH: number;
   /** Desired screen rect of the bubble this frame (kept even when hidden). */
   bubbleRect: { x: number; y: number; w: number; h: number };
-  nameTag: Phaser.GameObjects.Text;
-  nameBg: Phaser.GameObjects.Graphics;
+  /** Screen rect of the name tag this frame. */
+  nameRect: { x: number; y: number; w: number; h: number };
   hidden: boolean;
 }
 
 export interface OfficeSceneCallbacks {
   onSelect(sessionKey: string | null, agentId: string | null): void;
   onReady(): void;
+  /** Element covering the canvas that the DOM label overlay is built into. */
+  overlayHost: HTMLElement;
 }
 
 export interface CharacterSnapshot {
@@ -111,13 +110,7 @@ export class OfficeScene extends Phaser.Scene {
   private vm: OfficeVM | null = null;
   private vmDirty = false;
   private worldLayer!: Phaser.GameObjects.Layer;
-  private uiLayer!: Phaser.GameObjects.Layer;
-  private uiCamera!: Phaser.Cameras.Scene2D.Camera;
-  private roomLabels: Array<{
-    title: Phaser.GameObjects.Text;
-    sub: Phaser.GameObjects.Text;
-    bg: Phaser.GameObjects.Graphics;
-  }> = [];
+  private overlay!: OfficeOverlay;
   private selectionGfx!: Phaser.GameObjects.Graphics;
   private linkGfx!: Phaser.GameObjects.Graphics;
   private dragStart: { x: number; y: number; sx: number; sy: number } | null = null;
@@ -145,20 +138,19 @@ export class OfficeScene extends Phaser.Scene {
     const cam = this.cameras.main;
     return [...this.chars.values()].map((e) => {
       const sy = e.seated ? -SIT_OFFSET : 0;
-      const nw = e.nameTag.width + 8;
       return {
         key: e.key,
         x: e.x,
         y: e.y,
         status: e.vm.status,
         bubble: e.vm.bubble ? e.vm.bubble.title : null,
-        bubbleVisible: e.bubble.visible,
+        bubbleVisible: !!e.vm.bubble && !e.hidden,
         screenX: (e.x - cam.worldView.x) * cam.zoom,
         screenY: (e.y + sy - cam.worldView.y) * cam.zoom,
-        bubbleAnchorX: e.vm.bubble ? e.bubble.x + e.bubbleW / 2 : null,
-        bubbleAnchorY: e.vm.bubble ? e.bubble.y + e.bubbleH : null,
-        nameAnchorX: e.nameBg.x + nw / 2,
-        nameAnchorY: e.nameBg.y,
+        bubbleAnchorX: e.vm.bubble ? e.bubbleRect.x + e.bubbleW / 2 : null,
+        bubbleAnchorY: e.vm.bubble ? e.bubbleRect.y + e.bubbleH : null,
+        nameAnchorX: e.nameRect.x + e.nameRect.w / 2,
+        nameAnchorY: e.nameRect.y,
       };
     });
   }
@@ -184,18 +176,17 @@ export class OfficeScene extends Phaser.Scene {
   create(): void {
     this.cameras.main.setBackgroundColor('#23262f');
     this.worldLayer = this.add.layer();
-    this.uiLayer = this.add.layer();
-    this.uiLayer.setDepth(10000);
+    this.overlay = new OfficeOverlay(this.callbacks.overlayHost);
+    this.overlay.ensureRoomLabels(this.layout.pods.length);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.overlay.destroy());
     this.buildMap();
     this.buildAnimations();
     this.selectionGfx = this.add.graphics().setDepth(9000);
     this.linkGfx = this.add.graphics().setDepth(8990);
     this.worldLayer.add([this.selectionGfx, this.linkGfx]);
-    this.buildRoomLabels();
     this.setupCameras();
     this.setupInput();
     this.scale.on('resize', () => {
-      this.uiCamera.setSize(this.scale.width, this.scale.height);
       if (!this.userCamera) this.fitCamera();
     });
     this.ready = true;
@@ -283,44 +274,9 @@ export class OfficeScene extends Phaser.Scene {
     }
   }
 
-  private uiText(size: string, color: string, style = ''): Phaser.GameObjects.Text {
-    const t = this.add.text(0, 0, '', {
-      fontFamily: UI_FONT,
-      fontSize: size,
-      fontStyle: style,
-      color,
-      resolution: window.devicePixelRatio || 1,
-    });
-    this.uiLayer.add(t);
-    return t;
-  }
-
-  private uiGraphics(): Phaser.GameObjects.Graphics {
-    const g = this.add.graphics();
-    this.uiLayer.add(g);
-    return g;
-  }
-
-  private buildRoomLabels(): void {
-    for (let i = 0; i < this.layout.pods.length; i++) {
-      const bg = this.uiGraphics();
-      const title = this.uiText('12px', '#1f2937', '600');
-      const sub = this.uiText('10px', '#4b5563');
-      this.roomLabels.push({ title, sub, bg });
-    }
-  }
-
   // ---- cameras ----------------------------------------------------------------
   private setupCameras(): void {
-    const main = this.cameras.main;
-    main.setRoundPixels(true);
-    this.uiCamera = this.cameras.add(0, 0, this.scale.width, this.scale.height, false, 'ui');
-    this.uiCamera.setScroll(0, 0);
-    this.uiCamera.setZoom(1);
-    this.uiCamera.setRoundPixels(true);
-    // The world camera never draws UI objects; the UI camera never draws world objects.
-    main.ignore(this.uiLayer);
-    this.uiCamera.ignore(this.worldLayer);
+    this.cameras.main.setRoundPixels(true);
     this.fitCamera();
   }
 
@@ -459,18 +415,22 @@ export class OfficeScene extends Phaser.Scene {
     for (const [key, e] of this.chars) {
       if (!seen.has(key)) {
         e.sprite.destroy();
-        e.bubble.destroy();
-        e.nameTag.destroy();
-        e.nameBg.destroy();
+        this.overlay.removeCharacter(key);
         this.chars.delete(key);
       }
     }
-    for (let i = 0; i < this.roomLabels.length; i++) {
+    for (let i = 0; i < this.layout.pods.length; i++) {
       const room = vm.rooms[i];
-      const lbl = this.roomLabels[i]!;
-      lbl.title.setText(room ? room.title : '');
-      lbl.sub.setText(room ? room.subtitle : '');
-      lbl.title.setColor(room?.provider ? PROVIDER_COLOR[room.provider] : '#6b7280');
+      this.overlay.setRoomLabel(
+        i,
+        room
+          ? {
+              title: room.title,
+              sub: room.subtitle,
+              color: room.provider ? PROVIDER_COLOR[room.provider] : '#6b7280',
+            }
+          : null,
+      );
     }
     if (this.pendingFocus && this.chars.has(this.pendingFocus.key)) {
       const k = this.pendingFocus.key;
@@ -490,25 +450,7 @@ export class OfficeScene extends Phaser.Scene {
     sprite.setInteractive({ useHandCursor: true });
     sprite.setData('charKey', c.key);
     this.worldLayer.add(sprite);
-    const bubbleBg = this.add.graphics();
-    const bubbleTitle = this.add.text(0, 0, '', {
-      fontFamily: UI_FONT,
-      fontSize: '12px',
-      fontStyle: '600',
-      color: '#111827',
-      resolution: window.devicePixelRatio || 1,
-    });
-    const bubbleDetail = this.add.text(0, 0, '', {
-      fontFamily: UI_FONT,
-      fontSize: '11px',
-      color: '#374151',
-      resolution: window.devicePixelRatio || 1,
-    });
-    const bubble = this.add.container(0, 0, [bubbleBg, bubbleTitle, bubbleDetail]);
-    this.uiLayer.add(bubble);
-    const nameBg = this.uiGraphics();
-    const nameTag = this.uiText('10px', '#ffffff');
-    nameTag.setText(c.label);
+    this.overlay.addCharacter(c.key);
     const now = this.time.now;
     return {
       key: c.key,
@@ -523,15 +465,10 @@ export class OfficeScene extends Phaser.Scene {
       dir: 'down',
       lastRetargetAt: 0,
       spawnedAt: now,
-      bubble,
-      bubbleBg,
-      bubbleTitle,
-      bubbleDetail,
       bubbleW: 0,
       bubbleH: 0,
       bubbleRect: { x: 0, y: 0, w: 0, h: 0 },
-      nameTag,
-      nameBg,
+      nameRect: { x: 0, y: 0, w: 0, h: 0 },
       hidden: false,
     };
   }
@@ -587,43 +524,27 @@ export class OfficeScene extends Phaser.Scene {
   private updateBubbleContent(e: CharEntity): void {
     const c = e.vm;
     const b = c.bubble;
-    const color = STATUS_COLOR[c.status];
-    if (!b) {
-      e.bubble.setVisible(false);
-      e.bubbleW = 0;
-      e.bubbleH = 0;
-    } else {
-      e.bubble.setVisible(!e.hidden);
-      const title = b.extra > 0 ? `${b.title}  +${b.extra}` : b.title;
-      e.bubbleTitle.setText(title);
-      e.bubbleTitle.setColor(color);
-      e.bubbleDetail.setText(b.detail ?? '');
-      const maxW = 240;
-      e.bubbleTitle.setWordWrapWidth(maxW, true);
-      e.bubbleDetail.setWordWrapWidth(maxW, true);
-      const pad = 6;
-      const w = Math.min(maxW + pad * 2, Math.max(e.bubbleTitle.width, e.bubbleDetail.width) + pad * 2);
-      const h = e.bubbleTitle.height + (b.detail ? e.bubbleDetail.height + 1 : 0) + pad * 2 - 2;
-      e.bubbleW = w;
-      e.bubbleH = h;
-      e.bubbleTitle.setPosition(pad, pad - 1);
-      e.bubbleDetail.setPosition(pad, pad - 1 + e.bubbleTitle.height + 1);
-      e.bubbleBg.clear();
-      e.bubbleBg.fillStyle(0xffffff, 0.96);
-      e.bubbleBg.lineStyle(1.5, Phaser.Display.Color.HexStringToColor(color).color, 1);
-      e.bubbleBg.fillRoundedRect(0, 0, w, h, 4);
-      e.bubbleBg.strokeRoundedRect(0, 0, w, h, 4);
-      e.bubbleBg.fillTriangle(w / 2 - 4, h, w / 2 + 4, h, w / 2, h + 5);
-    }
-    e.nameTag.setText(c.label);
-    e.nameBg.clear();
-    const nw = e.nameTag.width + 8;
-    const nh = e.nameTag.height + 2;
-    const tagColor = Phaser.Display.Color.HexStringToColor(c.tagColor || PROVIDER_COLOR[c.provider]).color;
-    e.nameBg.fillStyle(tagColor, c.dimmed ? 0.45 : 0.9);
-    e.nameBg.fillRoundedRect(0, 0, nw, nh, 3);
+    const size = this.overlay.setBubble(
+      e.key,
+      b
+        ? {
+            title: b.extra > 0 ? `${b.title}  +${b.extra}` : b.title,
+            detail: b.detail ?? '',
+            color: STATUS_COLOR[c.status],
+            faded: c.dimmed && !c.selected,
+          }
+        : null,
+    );
+    e.bubbleW = size.w;
+    e.bubbleH = size.h;
+    const name = this.overlay.setName(e.key, {
+      label: c.label,
+      color: c.tagColor || PROVIDER_COLOR[c.provider],
+      dimmed: c.dimmed,
+    });
+    e.nameRect.w = name.w;
+    e.nameRect.h = name.h;
     e.sprite.setAlpha(c.dimmed ? 0.55 : 1);
-    e.bubble.setAlpha(c.dimmed && !c.selected ? 0.6 : 1);
   }
 
   // ---- per-frame --------------------------------------------------------------
@@ -644,10 +565,10 @@ export class OfficeScene extends Phaser.Scene {
       const bx = Math.round(sxp - e.bubbleW / 2);
       const by = Math.round(syp - CHAR_FRAME_H * zoom - e.bubbleH - 6);
       e.bubbleRect = { x: bx, y: by, w: e.bubbleW, h: e.bubbleH };
-      e.bubble.setPosition(bx, by); // always, so hidden bubbles can reappear in place
-      const nw = e.nameTag.width + 8;
-      e.nameBg.setPosition(Math.round(sxp - nw / 2), Math.round(syp + 2));
-      e.nameTag.setPosition(Math.round(sxp - nw / 2 + 4), Math.round(syp + 3));
+      this.overlay.placeBubble(e.key, bx, by); // always, so hidden bubbles reappear in place
+      e.nameRect.x = Math.round(sxp - e.nameRect.w / 2);
+      e.nameRect.y = Math.round(syp + 2);
+      this.overlay.placeName(e.key, e.nameRect.x, e.nameRect.y);
     }
     this.drawSelectionAndLinks(time);
     this.layoutRoomLabels();
@@ -732,17 +653,9 @@ export class OfficeScene extends Phaser.Scene {
     const cam = this.cameras.main;
     const zoom = cam.zoom;
     this.layout.pods.forEach((pod, i) => {
-      const lbl = this.roomLabels[i];
-      if (!lbl) return;
       const sx = (pod.labelPos.x - cam.worldView.x) * zoom;
       const sy = (pod.labelPos.y - cam.worldView.y) * zoom;
-      const w = Math.max(lbl.title.width, lbl.sub.width) + 10;
-      const h = lbl.title.height + lbl.sub.height + 4;
-      lbl.bg.clear();
-      lbl.bg.fillStyle(0xffffff, 0.82);
-      lbl.bg.fillRoundedRect(Math.round(sx), Math.round(sy), w, h, 3);
-      lbl.title.setPosition(Math.round(sx) + 5, Math.round(sy) + 1);
-      lbl.sub.setPosition(Math.round(sx) + 5, Math.round(sy) + 1 + lbl.title.height);
+      this.overlay.placeRoomLabel(i, Math.round(sx), Math.round(sy));
     });
   }
 
@@ -766,7 +679,7 @@ export class OfficeScene extends Phaser.Scene {
       const hide = overlaps && !e.vm.selected;
       if (hide !== e.hidden) {
         e.hidden = hide;
-        e.bubble.setVisible(!hide);
+        this.overlay.setBubbleHidden(e.key, hide);
       }
       if (!hide) placed.push(r);
     }
